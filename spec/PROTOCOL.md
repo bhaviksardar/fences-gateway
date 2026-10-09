@@ -8,7 +8,6 @@ What the `agentfences` SDK sends to a Fences server, and what it expects back. T
 |---|---|
 | ✅ | Live: today's SDK and server both do this |
 | 🆕 | SDK 0.3 (unreleased) sends or expects this; the server has to build it |
-| 📝 | Designed here, built on neither side yet |
 
 SDK 0.3 and the server changes ship together, after the server passes `tests/test_sdk_e2e.py` against the unreleased SDK.
 
@@ -22,6 +21,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 - [ ] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
 - [ ] Quarantine an agent from the dashboard
 - [ ] Run start: accept null limits and fill them from the agent's dashboard limits, then defaults; a run with no budget anywhere starts unlimited (see "Limits owned by the dashboard")
+- [ ] Read `X-Fences-SDK`: store the version per key, show it, add an `old_sdk` notice for outdated SDKs, send no commands to versions before 0.3
 - [ ] Agents with no budget: "No budget" badge, the Set a budget / Keep unlimited prompt on first unlimited run, an owner notification, and a `no_budget` notice in the run-start reply
 - [ ] `tests/test_sdk_e2e.py`: stop using `raise_on_breach` and `BudgetExceeded` (removed in SDK 0.3); it doesn't import against the new SDK
 - [ ] `dashboard/docs.html`: drop the exception classes and `raise_on_breach`
@@ -31,6 +31,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 ## Conventions ✅
 
 - **Transport:** HTTPS, `POST` with a JSON body, JSON responses. The SDK waits 3 seconds per request.
+- **SDK version** 🆕: every request also carries `X-Fences-SDK: python/0.3.0`. Store the latest version per key and show it on the agent's page. When it's older than the server's current SDK, say so in a run-start `notices` entry (code `old_sdk`). Never send commands to a version before 0.3, which has none.
 - **Auth:** every request carries `X-API-Key: fc_...`. A key belongs to one account and one named agent; runs a key starts are reported under that agent's name, whatever `agent_name` the SDK sends.
 - **Ownership:** a key only sees and touches runs of its own account. Another account's run, or one that doesn't exist, is `404 {"detail": "Run not found"}`.
 - **Run IDs** are UUIDs chosen by the SDK.
@@ -252,14 +253,6 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ---
 
-## Designed, not built 📝
-
-### SDK version on every request
-
-The SDK will send `X-Fences-SDK: python/0.3.0`. The server stores the latest version per key, shows it on the agent's page, and warns about old ones. It should not send commands a version doesn't understand (anything before 0.3 has no commands at all).
-
----
-
 ## Changes to this file
 
-- **0.3 (unreleased):** optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, the events endpoint, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
+- **0.3 (unreleased):** the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, the events endpoint, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
