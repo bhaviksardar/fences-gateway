@@ -13,18 +13,20 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 
 ### Server work for SDK 0.3
 
-- [ ] Run start: store `context`; answer `423` for a quarantined agent
-- [ ] Run end: store `exception`
-- [ ] `POST /api/runs/{run_id}/spans`: store tool calls, model calls and approvals (OpenTelemetry-shaped); show them on the run
-- [ ] `POST /api/heartbeat`: record last heartbeat per run; return pending commands
-- [ ] Send `stop`, `pause`, `resume`, `limits` commands from the dashboard actions (in heartbeat and checkpoint responses)
-- [ ] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
-- [ ] Quarantine an agent from the dashboard
-- [ ] Run start: accept null limits and fill them from the agent's dashboard limits, then defaults; a run with no budget anywhere starts unlimited (see "Limits owned by the dashboard")
-- [ ] Read `X-Fences-SDK`: store the version per key, show it, add an `old_sdk` notice for outdated SDKs, send no commands to versions before 0.3
-- [ ] Agents with no budget: "No budget" badge, the Set a budget / Keep unlimited prompt on first unlimited run, an owner notification, and a `no_budget` notice in the run-start reply
-- [ ] `tests/test_sdk_e2e.py`: stop using `raise_on_breach` and `BudgetExceeded` (removed in SDK 0.3); it doesn't import against the new SDK
-- [ ] `dashboard/docs.html`: drop the exception classes and `raise_on_breach`
+All done in `fences-platform` (c09c70f..7629a96); its `tests/test_sdk_e2e.py` passes against SDK 0.3.
+
+- [x] Run start: store `context`; answer `423` for a quarantined agent
+- [x] Run end: store `exception`
+- [x] `POST /api/runs/{run_id}/spans`: store tool calls, model calls and approvals (OpenTelemetry-shaped); show them on the run
+- [x] `POST /api/heartbeat`: record last heartbeat per run; return pending commands
+- [x] Send `stop`, `pause`, `resume`, `limits` commands from the dashboard actions (in heartbeat and checkpoint responses)
+- [x] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
+- [x] Quarantine an agent from the dashboard
+- [x] Run start: accept null limits and fill them from the agent's dashboard limits, then defaults; a run with no budget anywhere starts unlimited (see "Limits owned by the dashboard")
+- [x] Read `X-Fences-SDK`: store the version per key, show it, add an `old_sdk` notice for outdated SDKs, send no commands to versions before 0.3
+- [x] Agents with no budget: "No budget" badge, the Set a budget / Keep unlimited prompt on first unlimited run, an owner notification, and a `no_budget` notice in the run-start reply
+- [x] `tests/test_sdk_e2e.py`: stop using `raise_on_breach` and `BudgetExceeded` (removed in SDK 0.3); it doesn't import against the new SDK
+- [x] `dashboard/docs.html`: drop the exception classes and `raise_on_breach`
 
 ---
 
@@ -188,6 +190,13 @@ The server should record each run's last heartbeat: a running run with no heartb
 
 Delivered in heartbeat responses and in checkpoint responses. Every command is safe to apply twice, so deliver at least once (for example, until the next heartbeat shows the effect). Unknown types are ignored.
 
+How the server does it (`fences-platform`): commands aren't queued, they're derived from the run's state and re-sent on every heartbeat and checkpoint reply:
+- `stop` while the run is `stopped_by_user`
+- `pause` until a heartbeat reports `paused: true`
+- `resume` while the SDK reports paused but no pause is requested
+- `limits` always
+- `approval` answers for 10 minutes after they're given
+
 | Command | Effect in the SDK | What the server does |
 |---|---|---|
 | `{"run_id", "type": "stop"}` | The next `checkpoint()` returns breach `stopped_by_user`; it sticks even if a later response says ok | ✅ already marks the run breached via `POST /api/runs/{id}/stop`; 🆕 also send this command so a run between checkpoints learns sooner |
@@ -201,18 +210,22 @@ Delivered in heartbeat responses and in checkpoint responses. Every command is s
 Sent by `request_approval(reason, amount_usd=None, timeout_s=600)`; the agent then waits for the answer.
 
 ```json
-{"approval_id": "0c3e...", "reason": "Refund $240 to order 1182?", "amount_usd": 240}
+{"approval_id": "0c3e...", "reason": "Refund $240 to order 1182?", "amount_usd": 240, "timeout_s": 600}
 ```
 
 - `approval_id` is a UUID chosen by the SDK; treat a repeat as the same request.
 - **Response:** `{"ok": true}` once the request is stored and someone is notified.
 - Show it to the on-call person with approve/deny. Their answer goes back as an `approval` command, with `by` (who answered, e.g. their email) and an optional `note`.
 - **If an amount is granted, add it to the run's `budget_usd` on the server too.** The SDK raises its local budget by the same amount; if only one side does, the next checkpoint breaches.
-- The SDK stops waiting after `timeout_s`. A late answer should be shown as expired, not applied.
+- The SDK stops waiting after `timeout_s` (sent with the request; 600 if absent). Expire the request on the server at the same moment, and show a late answer as expired, not applied.
 
 ### Quarantine
 
-A quarantined agent: new runs get `423` at start (above); running runs get `pause`.
+A quarantined agent: new runs get `423` at start (above); running runs get `pause`. Releasing the quarantine resumes all of that agent's paused runs.
+
+### Older SDKs
+
+A run whose key last reported an SDK before 0.3 (`X-Fences-SDK`) can't be paused: it has no heartbeat to wait on. The server refuses the pause with `409` and says why.
 
 ---
 
