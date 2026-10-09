@@ -1,6 +1,6 @@
 # Fences SDK ↔ server protocol
 
-What the `agentfences` SDK sends to a Fences server, and what it expects back. The SDK in this repo and the server in `fences-platform` both implement this file; when they disagree, fix one of them or change this file first.
+What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to a Fences server, and what they expect back. The SDKs in this repo and the server in `fences-platform` all implement this file; when they disagree, fix one of them or change this file first.
 
 **Status markers**
 
@@ -31,7 +31,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 ## Conventions ✅
 
 - **Transport:** HTTPS, `POST` with a JSON body, JSON responses. The SDK waits 3 seconds per request.
-- **SDK version** 🆕: every request also carries `X-Fences-SDK: python/0.3.0`. Store the latest version per key and show it on the agent's page. When it's older than the server's current SDK, say so in a run-start `notices` entry (code `old_sdk`). Never send commands to a version before 0.3, which has none.
+- **SDK version** 🆕: every request also carries `X-Fences-SDK: python/0.3.0` (or `js/0.3.0` from the TypeScript SDK). Store the latest version per key and show it on the agent's page. When it's older than the server's current SDK, say so in a run-start `notices` entry (code `old_sdk`). Never send commands to a version before 0.3, which has none.
 - **Auth:** every request carries `X-API-Key: fc_...`. A key belongs to one account and one named agent; runs a key starts are reported under that agent's name, whatever `agent_name` the SDK sends.
 - **Ownership:** a key only sees and touches runs of its own account. Another account's run, or one that doesn't exist, is `404 {"detail": "Run not found"}`.
 - **Run IDs** are UUIDs chosen by the SDK.
