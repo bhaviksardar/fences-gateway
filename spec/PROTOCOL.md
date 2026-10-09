@@ -21,6 +21,8 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 - [ ] Send `stop`, `pause`, `resume`, `limits` commands from the dashboard actions (in heartbeat and checkpoint responses)
 - [ ] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
 - [ ] Quarantine an agent from the dashboard
+- [ ] Run start: accept null limits and fill them from the agent's dashboard limits, then defaults; a run with no budget anywhere starts unlimited (see "Limits owned by the dashboard")
+- [ ] Agents with no budget: "No budget" badge, the Set a budget / Keep unlimited prompt on first unlimited run, an owner notification, and a `no_budget` notice in the run-start reply
 - [ ] `tests/test_sdk_e2e.py`: stop using `raise_on_breach` and `BudgetExceeded` (removed in SDK 0.3); it doesn't import against the new SDK
 - [ ] `dashboard/docs.html`: drop the exception classes and `raise_on_breach`
 
@@ -70,11 +72,13 @@ Sent when a `@governed` function is called, before any agent code runs.
 |---|---|---|
 | `run_id` | ✅ | 1–128 chars, unique; a repeat is `409` |
 | `agent_name` | ✅ | 1–128 chars; overridden by the key's agent |
-| `budget_usd`, `max_iterations`, `max_duration_ms`, `max_tokens` | ✅ | The limits in code. `max_tokens: 0` means no limit. The server caps each at the key's ceiling |
+| `budget_usd`, `max_iterations`, `max_duration_ms`, `max_tokens` | ✅ / 🆕 | The limits in code. `max_tokens: 0` means no limit. The server caps each at the key's ceiling. 🆕 Each may be `null`: not set in code (see "Limits owned by the dashboard") |
 | `context` | 🆕 | Optional. String → string, at most 32 keys, values up to 256 chars, already through the SDK's redact hook. Set by `init(environment=, release=)` and `agentfences.context(...)`. The server stores it on the run and lets the dashboard filter by it |
 
 **Response** ✅ `200 {"ok": true, "limits": {"budget_usd": 0.5, "max_iterations": 100, "max_duration_ms": 300000, "max_tokens": 0}}`: the run's effective limits after capping.
-🆕 The SDK adopts `limits`, so its local fallback (when the server is unreachable later) enforces the same numbers as the server.
+🆕 The SDK adopts `limits`, so its local fallback (when the server is unreachable later) enforces the same numbers as the server. `budget_usd: null` means the run is unlimited in spend.
+
+🆕 The reply may also carry `"notices": [{"code": "no_budget", "message": "research_agent has no budget, so its spend isn't capped.", "url": "https://.../agents/research_agent"}]`. The SDK logs each one as a warning, once per agent and code per process, with the URL appended. Use it for anything the developer should see in their logs (an outdated SDK, too).
 
 **Quarantine** 🆕 If the agent is quarantined, answer `423 {"detail": "<why, shown to the developer>"}` and create no run. The SDK raises `AgentQuarantined` from the governed call; no agent code runs.
 
@@ -200,6 +204,27 @@ A quarantined agent: new runs get `423` at start (above); running runs get `paus
 
 ---
 
+## Limits owned by the dashboard 🆕
+
+Under an on-call model, limits belong to whoever runs the agent, so every limit in `@governed(...)` is optional; a bare `@governed()` works.
+
+**SDK**
+- A limit left out in code is sent as `null` at run start.
+- Cloud mode: the SDK uses whatever the server returns in `limits`.
+- Local mode (no server): steps default to 100, time to 5 minutes, tokens to no limit, and **budget to none**.
+- With no budget the run still starts, unlimited in spend, and the SDK logs a warning once per agent: `research_agent has no budget, so its spend isn't capped.`, followed by how to set one (`@governed(budget_usd=...)` locally, or the server's `url`).
+
+**Server**
+1. Fill each `null` limit from the agent's limits in the dashboard (its key's settings); a limit in code is still capped by them as today.
+2. Anything still unset: 100 steps, 300000 ms, `max_tokens: 0`, and **no budget** (`budget_usd: null`).
+3. Never refuse a run for having no budget. Instead:
+   - Return a `no_budget` notice in the run-start reply, with the agent page's `url`.
+   - Show a **No budget** badge on the agent's row and on its runs, so it stands out.
+   - On the agent's first run with no budget, prompt the owner in the dashboard: **Set a budget** (opens the agent's limits) or **Keep unlimited**.
+   - "Keep unlimited" is remembered per agent and stops the prompt, but the badge stays.
+   - Notify the owner when an agent first runs without a budget: in the dashboard now, and over Slack/PagerDuty once alerting exists.
+4. A key-level daily or monthly cap still applies to an agent with no per-run budget.
+
 ## Breach types
 
 What `checkpoint()` can return as `breach_type`, each with its own `message` and `system_prompt` in the SDK. The server returns the ones it decides in the `breach` field.
@@ -233,17 +258,8 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 The SDK will send `X-Fences-SDK: python/0.3.0`. The server stores the latest version per key, shows it on the agent's page, and warns about old ones. It should not send commands a version doesn't understand (anything before 0.3 has no commands at all).
 
-### Limits owned by the dashboard
-
-Under an on-call model, limits belong to whoever runs the agent. The SDK will allow a bare `@governed()`:
-
-- At start it sends `"budget_usd": null` (and null for any limit not set in code).
-- The server fills each null from the agent's limits in the dashboard, and returns the effective set in `limits` as today.
-- **Open question:** what if neither code nor dashboard sets a budget? Proposal: reject the start with `422 {"detail": "Set a budget for <agent> in the dashboard, or pass budget_usd"}`, which the SDK turns into a clear exception, rather than running unlimited.
-- Local mode has no dashboard, so there a bare `@governed()` will need limits in code or use conservative defaults.
-
 ---
 
 ## Changes to this file
 
-- **0.3 (unreleased):** run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, the events endpoint, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
+- **0.3 (unreleased):** optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, the events endpoint, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
