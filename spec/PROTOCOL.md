@@ -13,7 +13,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 
 ### Server work for SDK 0.3
 
-All done in `fences-platform` (c09c70f..7629a96); its `tests/test_sdk_e2e.py` passes against SDK 0.3.
+All done in `fences-platform` (c09c70f..212487a); its `tests/test_sdk_e2e.py` passes against SDK 0.3.
 
 - [x] Run start: store `context`; answer `423` for a quarantined agent
 - [x] Run end: store `exception`
@@ -223,9 +223,9 @@ Sent by `request_approval(reason, amount_usd=None, timeout_s=600)`; the agent th
 
 A quarantined agent: new runs get `423` at start (above); running runs get `pause`. Releasing the quarantine resumes all of that agent's paused runs.
 
-### Older SDKs
+### Which SDKs get live control
 
-A run whose key last reported an SDK before 0.3 (`X-Fences-SDK`) can't be paused: it has no heartbeat to wait on. The server refuses the pause with `409` and says why.
+`X-Fences-SDK` is read as `language/version`. Live control (heartbeat commands, pause, approvals) is only for SDKs that implement it: **`python` 0.3 and later**. The TypeScript SDK (`js/0.3.0`) doesn't have it yet, so its runs get no commands, and pausing one is refused with `409` and a reason, as for any older SDK. Add a language and version here, and to the server's list, when it gains heartbeat, pause and approvals. The `old_sdk` notice compares versions per language.
 
 ---
 
