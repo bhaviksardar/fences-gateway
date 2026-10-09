@@ -15,7 +15,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 
 - [ ] Run start: store `context`; answer `423` for a quarantined agent
 - [ ] Run end: store `exception`
-- [ ] `POST /api/runs/{run_id}/events`: store tool and model calls; show them on the run
+- [ ] `POST /api/runs/{run_id}/spans`: store tool calls, model calls and approvals (OpenTelemetry-shaped); show them on the run
 - [ ] `POST /api/heartbeat`: record last heartbeat per run; return pending commands
 - [ ] Send `stop`, `pause`, `resume`, `limits` commands from the dashboard actions (in heartbeat and checkpoint responses)
 - [ ] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
@@ -38,7 +38,7 @@ SDK 0.3 and the server changes ship together, after the server passes `tests/tes
 
 ### How the SDK reads responses
 
-| Response | Core endpoints (start, checkpoint, decisions, end) | Optional endpoints (events, heartbeat, approvals) |
+| Response | Core endpoints (start, checkpoint, decisions, end) | Optional endpoints (spans, heartbeat, approvals) |
 |---|---|---|
 | 2xx with JSON | Use the body | Use the body |
 | 401 / 403 | Raises `PermissionError` in the agent: a bad key must be noticed | `{"ok": false}`, never raises |
@@ -117,27 +117,38 @@ The SDK adopts every total and limit in the response; the server is authoritativ
 ```
 `reasoning` 1–2000 chars, `action` optional, up to 200. Sent in the background, in order. Response body is ignored.
 
-### `POST /api/runs/{run_id}/events` 🆕
+### `POST /api/runs/{run_id}/spans` 🆕
 
-Tool calls and model calls, sent in the background, in order with decisions, batched up to 50 per request.
+Tool calls, model calls and approvals, as spans shaped like OpenTelemetry's and named by its [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai) (`gen_ai.*`), plus Fences' own `fences.*` attributes. Sent in the background, in order with decisions, batched up to 50 per request. Store them in the same model as spans ingested from OpenTelemetry later, so both show up the same way.
 
 ```json
-{"events": [
-  {"type": "tool_call", "ts": 1791161641.07, "iteration": 3, "name": "web_search",
-   "args": "query='cats', limit=5", "ok": false, "error": "PermissionError: 403 from search API", "latency_ms": 412},
-  {"type": "llm_call", "ts": 1791161642.30, "iteration": 3, "provider": "openai", "model": "gpt-4o-2024-08-06", "ok": true,
-   "latency_ms": 1830, "input_tokens": 600, "cache_read_tokens": 400, "cache_write_tokens": 0, "output_tokens": 200, "cost_usd": 0.004}
+{"spans": [
+  {"name": "chat gpt-4o-2024-08-06", "start_ts": 1791161640.47, "end_ts": 1791161642.30, "status": "ok",
+   "attributes": {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "openai",
+                  "gen_ai.request.model": "gpt-4o", "gen_ai.response.model": "gpt-4o-2024-08-06",
+                  "gen_ai.usage.input_tokens": 1000, "gen_ai.usage.cache_read.input_tokens": 400,
+                  "gen_ai.usage.cache_write.input_tokens": 0, "gen_ai.usage.output_tokens": 200,
+                  "fences.cost_usd": 0.004, "fences.iteration": 3}},
+  {"name": "execute_tool web_search", "start_ts": 1791161642.31, "end_ts": 1791161642.72, "status": "error",
+   "attributes": {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "web_search",
+                  "gen_ai.tool.call.arguments": "query='cats', limit=5", "error.type": "PermissionError",
+                  "fences.error.message": "PermissionError: 403 from search API", "fences.iteration": 3}}
 ]}
 ```
 
-| Type | Fields |
-|---|---|
-| `tool_call` | `name`, `args` (summary, ≤300 chars), `ok`, `error` (≤1000 chars, null if ok), `latency_ms` |
-| `llm_call` | `provider` (`openai`, `anthropic` from `instrument=True`; `langchain`, `openai-agents` from the framework integrations), `model`, `ok`, `latency_ms`; with usage: `input_tokens` (uncached), `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `cost_usd`; streamed calls: `stream: true` and no usage; failures: `error`, `status` (HTTP status, e.g. 429) |
-| `approval_requested` | `approval_id`, `reason`, `amount_usd` |
-| `approval_answered` | `approval_id`, `granted`, `by`, `note`, `amount_usd` |
+Every span has `name`, `start_ts` and `end_ts` (Unix seconds), `status` (`ok` or `error`) and `attributes`. Attributes with no value are left out.
 
-Every event has `type`, `ts` (Unix seconds) and `iteration` (the run's step count when it happened). Unknown types and fields must be ignored, so new ones can be added without a server release. `llm_call` events are a record only: their cost is **not** spend (spend arrives through checkpoints), so don't add them to the run's total. Response body is ignored.
+| Span `name` | `gen_ai.operation.name` | Attributes |
+|---|---|---|
+| `chat {model}` | `chat` | `gen_ai.provider.name` (`openai`, `anthropic`, or what LangChain reports), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.request.stream` (streamed calls have no usage); usage: `gen_ai.usage.input_tokens` (**includes** cache reads and writes, per OpenTelemetry), `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.output_tokens`, `fences.cost_usd` |
+| `execute_tool {name}` | `execute_tool` | `gen_ai.tool.name`, `gen_ai.tool.call.arguments` (a summary, ≤300 chars), `gen_ai.tool.call.id` when known |
+| `fences.approval` | – | One span from request to answer: `fences.approval.id`, `.reason`, `.amount_usd`, `.granted`, `.by`, `.note`, `.granted_usd` |
+
+On every span: `fences.iteration` (the run's step count when it happened) and, if recorded through a framework, `fences.integration` (`langchain`, `openai-agents`). On failures: `error.type` (the exception class), `fences.error.message` (≤1000 chars) and, for HTTP errors, `http.response.status_code` (e.g. 429).
+
+Unknown span names and attributes must be ignored, so new ones can be added without a server release. `fences.cost_usd` on model calls is a record only, not spend (spend arrives through checkpoints), so don't add it to the run's total. Response body is ignored.
+
+**Mapping a run to OpenTelemetry:** a Fences run is the `invoke_agent {agent_name}` span these sit under (`gen_ai.agent.name` = the run's agent; `gen_ai.conversation.id` = its `session_id` context value, if set).
 
 ### `POST /api/runs/{run_id}/end`
 
@@ -248,11 +259,11 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 ## Delivery guarantees ✅
 
 - Start, checkpoint and end are sent inline (in a worker thread for async agents) and wait for the answer.
-- Decisions and events go from one background thread, in order. **At most once:** nothing is retried, so a network error loses them. `flush()` (also run at exit) waits for the queue to drain.
+- Decisions and spans go from one background thread, in order. **At most once:** nothing is retried, so a network error loses them. `flush()` (also run at exit) waits for the queue to drain.
 - Everything except numbers and run IDs passes through the SDK's optional `redact` hook first, which can change or drop it. Don't assume a field is present.
 
 ---
 
 ## Changes to this file
 
-- **0.3 (unreleased):** the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, the events endpoint, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
+- **0.3 (unreleased):** tool and model calls as OpenTelemetry-shaped spans (`/spans`), the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
