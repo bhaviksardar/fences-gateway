@@ -133,7 +133,7 @@ Tool calls and model calls, sent in the background, in order with decisions, bat
 | Type | Fields |
 |---|---|
 | `tool_call` | `name`, `args` (summary, ≤300 chars), `ok`, `error` (≤1000 chars, null if ok), `latency_ms` |
-| `llm_call` | `provider` (`openai`, `anthropic`), `model`, `ok`, `latency_ms`; with usage: `input_tokens` (uncached), `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `cost_usd`; streamed calls: `stream: true` and no usage; failures: `error`, `status` (HTTP status, e.g. 429) |
+| `llm_call` | `provider` (`openai`, `anthropic` from `instrument=True`; `langchain`, `openai-agents` from the framework integrations), `model`, `ok`, `latency_ms`; with usage: `input_tokens` (uncached), `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `cost_usd`; streamed calls: `stream: true` and no usage; failures: `error`, `status` (HTTP status, e.g. 429) |
 | `approval_requested` | `approval_id`, `reason`, `amount_usd` |
 | `approval_answered` | `approval_id`, `granted`, `by`, `note`, `amount_usd` |
 
