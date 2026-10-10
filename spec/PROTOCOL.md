@@ -225,7 +225,7 @@ A quarantined agent: new runs get `423` at start (above); running runs get `paus
 
 ### Which SDKs get live control
 
-`X-Fences-SDK` is read as `language/version`. Live control (heartbeat commands, pause, approvals) is only for SDKs that implement it: **`python` 0.3 and later**. The TypeScript SDK (`js/0.3.0`) doesn't have it yet, so its runs get no commands, and pausing one is refused with `409` and a reason, as for any older SDK. Add a language and version here, and to the server's list, when it gains heartbeat, pause and approvals. The `old_sdk` notice compares versions per language.
+`X-Fences-SDK` is read as `language/version`. Live control (heartbeat commands, pause, approvals) is only for SDKs that implement it: **`python` 0.3 and later, `js` 0.4 and later**. Older ones (including `js/0.3.0`) get no commands, and pausing their runs is refused with `409` and a reason. When another SDK gains heartbeat, pause and approvals, add its language and version here and to the server's list. The `old_sdk` notice compares versions per language.
 
 ---
 
