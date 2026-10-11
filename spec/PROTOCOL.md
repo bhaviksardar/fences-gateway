@@ -2,38 +2,22 @@
 
 What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to a Fences server, and what they expect back. The SDKs in this repo and the server in `fences-platform` all implement this file; when they disagree, fix one of them or change this file first.
 
-**Status markers**
+## Which SDK supports what
 
-| | Meaning |
-|---|---|
-| ✅ | Live: today's SDK and server both do this |
-| 🆕 | SDK 0.3 (unreleased) sends or expects this; the server has to build it |
+| | Python (`sdk/`) | TypeScript (`sdk-js/`) |
+|---|---|---|
+| Runs, checkpoints, limits (including dashboard-owned and no-budget), run context, notices, quarantine, decisions, spans, errors on run end, `X-Fences-SDK` | 0.3.0 | 0.3.0 |
+| Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 (unreleased) |
+| SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
 
-SDK 0.3 and the server changes ship together, after the server passes `tests/test_sdk_e2e.py` against the unreleased SDK.
-
-### Server work for SDK 0.3
-
-All done in `fences-platform` (c09c70f..212487a); its `tests/test_sdk_e2e.py` passes against SDK 0.3.
-
-- [x] Run start: store `context`; answer `423` for a quarantined agent
-- [x] Run end: store `exception`
-- [x] `POST /api/runs/{run_id}/spans`: store tool calls, model calls and approvals (OpenTelemetry-shaped); show them on the run
-- [x] `POST /api/heartbeat`: record last heartbeat per run; return pending commands
-- [x] Send `stop`, `pause`, `resume`, `limits` commands from the dashboard actions (in heartbeat and checkpoint responses)
-- [x] `POST /api/runs/{run_id}/approvals`: store, notify, deliver the answer as an `approval` command, raise `budget_usd` by a granted amount
-- [x] Quarantine an agent from the dashboard
-- [x] Run start: accept null limits and fill them from the agent's dashboard limits, then defaults; a run with no budget anywhere starts unlimited (see "Limits owned by the dashboard")
-- [x] Read `X-Fences-SDK`: store the version per key, show it, add an `old_sdk` notice for outdated SDKs, send no commands to versions before 0.3
-- [x] Agents with no budget: "No budget" badge, the Set a budget / Keep unlimited prompt on first unlimited run, an owner notification, and a `no_budget` notice in the run-start reply
-- [x] `tests/test_sdk_e2e.py`: stop using `raise_on_breach` and `BudgetExceeded` (removed in SDK 0.3); it doesn't import against the new SDK
-- [x] `dashboard/docs.html`: drop the exception classes and `raise_on_breach`
+The server (`fences-platform`) implements everything in this file. It decides which SDKs get live control from `X-Fences-SDK` (see "Which SDKs get live control").
 
 ---
 
-## Conventions ✅
+## Conventions
 
 - **Transport:** HTTPS, `POST` with a JSON body, JSON responses. The SDK waits 3 seconds per request.
-- **SDK version** 🆕: every request also carries `X-Fences-SDK: python/0.3.0` (or `js/0.3.0` from the TypeScript SDK). Store the latest version per key and show it on the agent's page. When it's older than the server's current SDK, say so in a run-start `notices` entry (code `old_sdk`). Never send commands to a version before 0.3, which has none.
+- **SDK version**: every request also carries `X-Fences-SDK: python/0.3.0` (or `js/0.3.0` from the TypeScript SDK). Store the latest version per key and show it on the agent's page. When it's older than the server's current SDK, say so in a run-start `notices` entry (code `old_sdk`). Never send commands to a version before 0.3, which has none.
 - **Auth:** every request carries `X-API-Key: fc_...`. A key belongs to one account and one named agent; runs a key starts are reported under that agent's name, whatever `agent_name` the SDK sends.
 - **Ownership:** a key only sees and touches runs of its own account. Another account's run, or one that doesn't exist, is `404 {"detail": "Run not found"}`.
 - **Run IDs** are UUIDs chosen by the SDK.
@@ -71,19 +55,19 @@ Sent when a `@governed` function is called, before any agent code runs.
 }
 ```
 
-| Field | | Notes |
-|---|---|---|
-| `run_id` | ✅ | 1–128 chars, unique; a repeat is `409` |
-| `agent_name` | ✅ | 1–128 chars; overridden by the key's agent |
-| `budget_usd`, `max_iterations`, `max_duration_ms`, `max_tokens` | ✅ / 🆕 | The limits in code. `max_tokens: 0` means no limit. The server caps each at the key's ceiling. 🆕 Each may be `null`: not set in code (see "Limits owned by the dashboard") |
-| `context` | 🆕 | Optional. String → string, at most 32 keys, values up to 256 chars, already through the SDK's redact hook. Set by `init(environment=, release=)` and `agentfences.context(...)`. The server stores it on the run and lets the dashboard filter by it |
+| Field | Notes |
+|---|---|
+| `run_id` | 1–128 chars, unique; a repeat is `409` |
+| `agent_name` | 1–128 chars; overridden by the key's agent |
+| `budget_usd`, `max_iterations`, `max_duration_ms`, `max_tokens` | The limits in code. `max_tokens: 0` means no limit. The server caps each at the key's ceiling. Each may be `null`: not set in code (see "Limits owned by the dashboard") |
+| `context` | Optional. String → string, at most 32 keys, values up to 256 chars, already through the SDK's redact hook. Set by `init(environment=, release=)` and `agentfences.context(...)`. The server stores it on the run and lets the dashboard filter by it |
 
-**Response** ✅ `200 {"ok": true, "limits": {"budget_usd": 0.5, "max_iterations": 100, "max_duration_ms": 300000, "max_tokens": 0}}`: the run's effective limits after capping.
-🆕 The SDK adopts `limits`, so its local fallback (when the server is unreachable later) enforces the same numbers as the server. `budget_usd: null` means the run is unlimited in spend.
+**Response** `200 {"ok": true, "limits": {"budget_usd": 0.5, "max_iterations": 100, "max_duration_ms": 300000, "max_tokens": 0}}`: the run's effective limits after capping.
+The SDK adopts `limits`, so its local fallback (when the server is unreachable later) enforces the same numbers as the server. `budget_usd: null` means the run is unlimited in spend.
 
-🆕 The reply may also carry `"notices": [{"code": "no_budget", "message": "research_agent has no budget, so its spend isn't capped.", "url": "https://.../agents/research_agent"}]`. The SDK logs each one as a warning, once per agent and code per process, with the URL appended. Use it for anything the developer should see in their logs (an outdated SDK, too).
+The reply may also carry `"notices": [{"code": "no_budget", "message": "research_agent has no budget, so its spend isn't capped.", "url": "https://.../agents/research_agent"}]`. The SDK logs each one as a warning, once per agent and code per process, with the URL appended. Use it for anything the developer should see in their logs (an outdated SDK, too).
 
-**Quarantine** 🆕 If the agent is quarantined, answer `423 {"detail": "<why, shown to the developer>"}` and create no run. The SDK raises `AgentQuarantined` from the governed call; no agent code runs.
+**Quarantine** If the agent is quarantined, answer `423 {"detail": "<why, shown to the developer>"}` and create no run. The SDK raises `AgentQuarantined` from the governed call; no agent code runs.
 
 ### `POST /api/runs/{run_id}/checkpoint`
 
@@ -93,16 +77,16 @@ Sent after each step (usually each model call). Spend and tokens are **this step
 {"cost_delta_usd": 0.0123, "tokens_used": 1450, "iterations": 7, "duration_ms": 8200}
 ```
 
-✅ The server adds `cost_delta_usd` and `tokens_used` to the run, counts the step itself and measures time itself (`iterations` and `duration_ms` are sent but ignored), then checks limits.
+The server adds `cost_delta_usd` and `tokens_used` to the run, counts the step itself and measures time itself (`iterations` and `duration_ms` are sent but ignored), then checks limits.
 
-**Limit rules** ✅ (the SDK applies the same ones locally): a limit trips once **exceeded**, not when reached; spend is compared after `round(spent, 9)`; when several trip at once the order is spend, steps, time, tokens; `max_tokens: 0` means no token limit.
+**Limit rules** (the SDK applies the same ones locally): a limit trips once **exceeded**, not when reached; spend is compared after `round(spent, 9)`; when several trip at once the order is spend, steps, time, tokens; `max_tokens: 0` means no token limit.
 
-**Response, within limits** ✅
+**Response, within limits**
 ```json
 {"ok": true, "spent_usd": 0.31, "iterations": 7, "tokens_used": 9800}
 ```
 
-**Response, breached** ✅ (also on every later checkpoint of a run that's still breached)
+**Response, breached** (also on every later checkpoint of a run that's still breached)
 ```json
 {"ok": false, "breach": "budget_exceeded",
  "spent_usd": 0.52, "budget_usd": 0.5, "iterations": 14, "max_iterations": 20,
@@ -110,16 +94,16 @@ Sent after each step (usually each model call). Spend and tokens are **this step
 ```
 The SDK adopts every total and limit in the response; the server is authoritative.
 
-`409` ✅ for a run that already ended. 🆕 Either response may include `"commands": [...]` (see Commands); the SDK applies them before deciding.
+`409` for a run that already ended. Either response may include `"commands": [...]` (see Commands); the SDK applies them before deciding.
 
-### `POST /api/runs/{run_id}/decisions` ✅
+### `POST /api/runs/{run_id}/decisions`
 
 ```json
 {"iteration": 3, "reasoning": "Search returned nothing; retrying with a narrower query", "action": "retry_search"}
 ```
 `reasoning` 1–2000 chars, `action` optional, up to 200. Sent in the background, in order. Response body is ignored.
 
-### `POST /api/runs/{run_id}/spans` 🆕
+### `POST /api/runs/{run_id}/spans`
 
 Tool calls, model calls and approvals, as spans shaped like OpenTelemetry's and named by its [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai) (`gen_ai.*`), plus Fences' own `fences.*` attributes. Sent in the background, in order with decisions, batched up to 50 per request. Store them in the same model as spans ingested from OpenTelemetry later, so both show up the same way.
 
@@ -162,17 +146,17 @@ Sent when the governed function returns or raises.
                "stack": ["/app/agent.py:41 in fetch_page", "/app/agent.py:88 in research_agent"]}}
 ```
 
-| Field | | Notes |
-|---|---|---|
-| `status` | ✅ | `success`, `error` or `breached`. A run the server already marked breached stays breached |
-| `error` | ✅ | `"Type: message"`, or just the type. The server truncates to 2000 chars |
-| `exception` | 🆕 | Only on `error`. `type`, `message` (≤1000 chars), `stack` (last 15 frames, innermost last). Store it with the run for the incident page |
+| Field | Notes |
+|---|---|
+| `status` | `success`, `error` or `breached`. A run the server already marked breached stays breached |
+| `error` | `"Type: message"`, or just the type. The server truncates to 2000 chars |
+| `exception` | Only on `error`. `type`, `message` (≤1000 chars), `stack` (last 15 frames, innermost last). Store it with the run for the incident page |
 
 Both `error` and `exception` have been through the SDK's redact hook, and may be missing even on an error if the hook dropped them.
 
 ---
 
-## Live control 🆕
+## Live control
 
 ### `POST /api/heartbeat`
 
@@ -199,7 +183,7 @@ How the server does it (`fences-platform`): commands aren't queued, they're deri
 
 | Command | Effect in the SDK | What the server does |
 |---|---|---|
-| `{"run_id", "type": "stop"}` | The next `checkpoint()` returns breach `stopped_by_user`; it sticks even if a later response says ok | ✅ already marks the run breached via `POST /api/runs/{id}/stop`; 🆕 also send this command so a run between checkpoints learns sooner |
+| `{"run_id", "type": "stop"}` | The next `checkpoint()` returns breach `stopped_by_user`; it sticks even if a later response says ok | Marks the run breached (`POST /api/runs/{id}/stop`) and sends this command, so a run between checkpoints learns within seconds |
 | `{"run_id", "type": "pause"}` | The next `checkpoint()` waits until resumed; heartbeats report `"paused": true`. After `pause_timeout_s` (default 1 h) with no resume, `checkpoint()` returns breach `paused` | Keep sending `pause` until the heartbeat reports `paused: true` |
 | `{"run_id", "type": "resume"}` | The waiting checkpoint returns and the agent carries on | Send once after the operator resumes |
 | `{"run_id", "type": "limits", "budget_usd"?, "max_iterations"?, "max_duration_ms"?, "max_tokens"?}` | Updates the run's limits locally, so the offline fallback matches | Send whenever limits change from the dashboard |
@@ -229,7 +213,7 @@ A quarantined agent: new runs get `423` at start (above); running runs get `paus
 
 ---
 
-## Limits owned by the dashboard 🆕
+## Limits owned by the dashboard
 
 Under an on-call model, limits belong to whoever runs the agent, so every limit in `@governed(...)` is optional; a bare `@governed()` works.
 
@@ -256,20 +240,20 @@ What `checkpoint()` can return as `breach_type`, each with its own `message` and
 
 | `breach` | Decided by | Meaning |
 |---|---|---|
-| `budget_exceeded`, `iteration_limit`, `time_limit`, `token_limit` | ✅ server (or SDK locally) | A run limit was exceeded |
-| `key_daily_budget`, `key_monthly_budget` | ✅ server | The agent's daily or monthly cap across all its runs |
-| `stopped_by_user` | ✅ server / 🆕 `stop` command | Someone pressed Stop |
-| `paused` | 🆕 SDK | Paused and not resumed within `pause_timeout_s` |
-| `fences_unreachable` | ✅ SDK | Server unreachable and `init(fail_closed=True)` |
-| `limit_reached` | ✅ either | Fallback when the server gave no reason |
+| `budget_exceeded`, `iteration_limit`, `time_limit`, `token_limit` | server (or SDK locally) | A run limit was exceeded |
+| `key_daily_budget`, `key_monthly_budget` | server | The agent's daily or monthly cap across all its runs |
+| `stopped_by_user` | server, or a `stop` command | Someone pressed Stop |
+| `paused` | SDK | Paused and not resumed within `pause_timeout_s` |
+| `fences_unreachable` | SDK | Server unreachable and `init(fail_closed=True)` |
+| `limit_reached` | either | Fallback when the server gave no reason |
 
 New breach types need a message and system prompt in the SDK (`_make_breach_result`); until then the agent sees a generic "Governance limit reached."
 
-## Run statuses ✅
+## Run statuses
 
 `running` → `success`, `error` or `breached`. `breached` sticks: a later `end` with another status doesn't change it. Raising limits on a breached run from the dashboard can set it back to `running`, and its next checkpoint passes.
 
-## Delivery guarantees ✅
+## Delivery guarantees
 
 - Start, checkpoint and end are sent inline (in a worker thread for async agents) and wait for the answer.
 - Decisions and spans go from one background thread, in order. **At most once:** nothing is retried, so a network error loses them. `flush()` (also run at exit) waits for the queue to drain.
@@ -279,4 +263,5 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
-- **0.3 (unreleased):** tool and model calls as OpenTelemetry-shaped spans (`/spans`), the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results.
+- **TypeScript 0.4.0 (unreleased):** live control in the TypeScript SDK.
+- **0.3 (released 2026-10-09, Python 0.3.0 and TypeScript 0.3.0):** tool and model calls as OpenTelemetry-shaped spans (`/spans`), the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results. Server side: `fences-platform` c09c70f..212487a.
