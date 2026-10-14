@@ -8,7 +8,9 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 |---|---|---|
 | Runs, checkpoints, limits (including dashboard-owned and no-budget), run context, notices, quarantine, decisions, spans, errors on run end, `X-Fences-SDK` | 0.3.0 | 0.3.0 |
 | Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 |
+| Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | not yet |
 | SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
+| SDK-only, no protocol involved: budget prechecks before model calls, tool timeouts, cancelling a stuck async run after a stop | 0.4.0 | not yet |
 
 The server (`fences-platform`) implements everything in this file. It decides which SDKs get live control from `X-Fences-SDK` (see "Which SDKs get live control").
 
@@ -24,13 +26,13 @@ The server (`fences-platform`) implements everything in this file. It decides wh
 
 ### How the SDK reads responses
 
-| Response | Core endpoints (start, checkpoint, decisions, end) | Optional endpoints (spans, heartbeat, approvals) |
+| Response | Core endpoints (start, checkpoint, decisions, end) | Optional endpoints (spans, heartbeat, approvals, guard) |
 |---|---|---|
 | 2xx with JSON | Use the body | Use the body |
 | 401 / 403 | Raises `PermissionError` in the agent: a bad key must be noticed | `{"ok": false}`, never raises |
 | 409 | Read as "this run is already fenced" | `{"ok": false}` |
 | 423 | Run start only: the agent is quarantined (see below) | – |
-| 404 / 405 with `{"detail": "Not Found"}` or `{"detail": "Method Not Allowed"}` | Network error | **The endpoint doesn't exist on this server.** The SDK warns once and stops using it |
+| 404 / 405 with `{"detail": "Not Found"}` or `{"detail": "Method Not Allowed"}` | Network error | **The endpoint doesn't exist on this server.** The SDK warns once and stops using it (a guarded tool is then blocked) |
 | Anything else, a non-JSON body, a timeout | Network error: limits are enforced locally (or the run stops, with `fail_closed=True`) | Ignored |
 
 So the server must never answer a missing *run* with `{"detail": "Not Found"}` exactly; that text is reserved for a missing *route* (FastAPI's default). Use `"Run not found"`.
@@ -151,6 +153,7 @@ Sent when the governed function returns or raises.
 | `status` | `success`, `error` or `breached`. A run the server already marked breached stays breached |
 | `error` | `"Type: message"`, or just the type. The server truncates to 2000 chars |
 | `exception` | Only on `error`. `type`, `message` (≤1000 chars), `stack` (last 15 frames, innermost last). Store it with the run for the incident page |
+| `breach` | Only on `breached` (Python 0.4+): which breach ended the run, as in "Breach types". It matters for breaches the server didn't decide: `budget_exceeded` from a model call the SDK refused before sending it (its spend never crossed the budget), `paused`, `fences_unreachable`. Store and show it like a breach the server decided |
 
 Both `error` and `exception` have been through the SDK's redact hook, and may be missing even on an error if the hook dropped them.
 
@@ -163,10 +166,15 @@ Both `error` and `exception` have been through the SDK's redact hook, and may be
 A background thread in each process with live runs sends this every 15 seconds (configurable), and every 2 seconds while one of its runs is paused or waiting for an approval.
 
 ```json
-{"runs": [{"run_id": "6f1c...", "iterations": 14, "spent_usd": 0.31, "tokens_used": 9800, "paused": false}]}
+{"runs": [{"run_id": "6f1c...", "iterations": 14, "spent_usd": 0.31, "tokens_used": 9800, "paused": false, "stopped": false}]}
 ```
 
 **Response:** `{"commands": [...]}` with any commands for those runs.
+
+`stopped: true` means the SDK has received a `stop` for that run (Python 0.4+; older SDKs leave it out). Use it to show how far a stop got:
+- **Stop sent, not received:** no heartbeat with `stopped: true` yet. The process may be dead or cut off.
+- **Received, still running:** the agent hasn't reached a checkpoint. An async Python run is cancelled `stop_grace_s` (default 30) seconds after the stop arrives, so it ends soon; a synchronous one can't be interrupted.
+- If it's still running a while after that (say, 2 minutes), show it as **unresponsive** and offer to quarantine the agent, so no new run starts and every guarded tool is blocked.
 
 The server should record each run's last heartbeat: a running run with no heartbeat and no checkpoint for a while is **stuck** (or its process died), which is what the stuck detector looks for. The run's own numbers come from checkpoints; treat the ones here as a hint.
 
@@ -203,9 +211,40 @@ Sent by `request_approval(reason, amount_usd=None, timeout_s=600)`; the agent th
 - **If an amount is granted, add it to the run's `budget_usd` on the server too.** The SDK raises its local budget by the same amount; if only one side does, the next checkpoint breaches.
 - The SDK stops waiting after `timeout_s` (sent with the request; 600 if absent). Expire the request on the server at the same moment, and show a late answer as expired, not applied.
 
+### Guarded tools: `POST /api/runs/{run_id}/guard`
+
+A tool marked `@agentfences.tool(guard=True)` (or with `cost_usd=` or `approve=True`) asks the server before it runs, and again after, to settle. The tool runs only on `"allow": true`. This is the enforcement point for actions with consequences (refunds, payments, writes to production): the model can't talk its way past it, because the check happens in the tool's own code before it does anything.
+
+**Check**, before the tool runs:
+```json
+{"guard_id": "9b2e...", "phase": "check", "tool": "issue_refund", "arguments": "order_id='1182', amount=240",
+ "amount_usd": 240, "approval_id": "0c3e..."}
+```
+- `guard_id`: a UUID chosen by the SDK. A repeat of an allowed check returns the stored answer and is never reserved twice. A repeat of a denied one is checked again, as nothing was reserved and the cause may have changed (a resume, an approval).
+- `arguments`: a summary (≤300 chars), already through the redact hook.
+- `amount_usd`: what the call may cost the run (`0` if unknown). On allow, **reserve** it: it counts against the run's budget, and the key's daily and monthly caps, until it's settled. Check and reserve atomically, so two calls racing for the last of a budget can't both pass.
+- `approval_id`: present when the SDK got an approval for this call (`approve=True`). Allow only if that approval belongs to this run, was granted and hasn't been used for another guard.
+
+**Response:** `{"allow": true}`, or `{"allow": false, "reason": "<why, shown to the developer and the model>", "breach": "budget_exceeded"}`. Either may carry `commands`. Deny when:
+- the run is stopped, breached or paused, or the agent is quarantined
+- `spent + reserved + amount_usd` would exceed the run's budget or a key cap (`breach: budget_exceeded`, or the key cap's breach type)
+- the dashboard requires approval for this tool and there's no valid `approval_id`. Answer `{"allow": false, "needs_approval": true, "reason": "..."}`: the SDK asks for approval (see Approvals), then checks again with its `approval_id`.
+
+**Settle**, after the tool finishes:
+```json
+{"guard_id": "9b2e...", "phase": "settle", "outcome": "ok", "cost_usd": 240}
+```
+Release the reservation and add `cost_usd` to the run's spend (it's not a step, so `iterations` stays the same).
+- `outcome`: `ok` (it ran), `error` (it raised, `cost_usd: 0`), or `unknown` (it timed out or was cancelled, so it may have happened; the SDK charges the full amount to be safe).
+- A reservation never settled (the SDK lost its connection, or the process died) is charged in full when the run ends.
+
+The response body is ignored.
+
+**In the SDK:** a denied call raises `ToolBlocked` (with `reason` and `breach_type`) instead of running, and is recorded as a failed `execute_tool` span. With no answer (unreachable, timeout, any error) the tool is blocked: guards fail closed even without `fail_closed=True`. A server without this endpoint blocks guarded tools, with one warning. In local mode the SDK applies the same rules itself (stop, breach, budget including reservations); `approve=True` is always denied there, as there's no one to ask.
+
 ### Quarantine
 
-A quarantined agent: new runs get `423` at start (above); running runs get `pause`. Releasing the quarantine resumes all of that agent's paused runs.
+A quarantined agent: new runs get `423` at start (above); running runs get `pause`, and every guard check is denied. Releasing the quarantine resumes all of that agent's paused runs.
 
 ### Which SDKs get live control
 
@@ -243,6 +282,7 @@ What `checkpoint()` can return as `breach_type`, each with its own `message` and
 | `budget_exceeded`, `iteration_limit`, `time_limit`, `token_limit` | server (or SDK locally) | A run limit was exceeded |
 | `key_daily_budget`, `key_monthly_budget` | server | The agent's daily or monthly cap across all its runs |
 | `stopped_by_user` | server, or a `stop` command | Someone pressed Stop |
+| `budget_exceeded` (prechecked) | SDK | A model call refused before it was sent because its worst case could have passed the budget; reported in `end`'s `breach`, as spend never crossed the budget on the server |
 | `paused` | SDK | Paused and not resumed within `pause_timeout_s` |
 | `fences_unreachable` | SDK | Server unreachable and `init(fail_closed=True)` |
 | `limit_reached` | either | Fallback when the server gave no reason |
@@ -256,6 +296,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 ## Delivery guarantees
 
 - Start, checkpoint and end are sent inline (in a worker thread for async agents) and wait for the answer.
+- Guard checks and settles are sent inline too. Nothing is retried, so a check is never applied twice; `guard_id` makes a repeat harmless anyway.
 - Decisions and spans go from one background thread, in order. **At most once:** nothing is retried, so a network error loses them. `flush()` (also run at exit) waits for the queue to drain.
 - Everything except numbers and run IDs passes through the SDK's optional `redact` hook first, which can change or drop it. Don't assume a field is present.
 
@@ -263,5 +304,6 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
+- **Python 0.4.0 (released 2026-10-13):** `breach` on `end` for breaches the SDK decided, guarded tools (`/guard`: check and reserve before, settle after), `stopped` in heartbeat runs, unacknowledged and unresponsive stops. Budget prechecks before model calls, tool timeouts and cancelling a stuck async run need no server change. See ENFORCEMENT.md for what each part guarantees. Server side: `fences-platform` 8ad1be9.
 - **TypeScript 0.4.0 (released 2026-10-11):** live control in the TypeScript SDK.
 - **0.3 (released 2026-10-09, Python 0.3.0 and TypeScript 0.3.0):** tool and model calls as OpenTelemetry-shaped spans (`/spans`), the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results. Server side: `fences-platform` c09c70f..212487a.
