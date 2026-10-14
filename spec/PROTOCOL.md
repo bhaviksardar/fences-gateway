@@ -9,6 +9,7 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 | Runs, checkpoints, limits (including dashboard-owned and no-budget), run context, notices, quarantine, decisions, spans, errors on run end, `X-Fences-SDK` | 0.3.0 | 0.3.0 |
 | Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 |
 | Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | not yet |
+| Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 | not yet |
 | SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
 | SDK-only, no protocol involved: budget prechecks before model calls, tool timeouts, cancelling a stuck async run after a stop | 0.4.0 | not yet |
 
@@ -166,10 +167,13 @@ Both `error` and `exception` have been through the SDK's redact hook, and may be
 A background thread in each process with live runs sends this every 15 seconds (configurable), and every 2 seconds while one of its runs is paused or waiting for an approval.
 
 ```json
-{"runs": [{"run_id": "6f1c...", "iterations": 14, "spent_usd": 0.31, "tokens_used": 9800, "paused": false, "stopped": false}]}
+{"runs": [{"run_id": "6f1c...", "iterations": 14, "spent_usd": 0.31, "tokens_used": 9800, "paused": false, "stopped": false}],
+ "acks": [{"run_id": "6f1c...", "id": "stop:6f1c...:1791937487", "type": "stop", "received_at": 1791937490.2}]}
 ```
 
 **Response:** `{"commands": [...]}` with any commands for those runs.
+
+`acks` (Python 0.5+) acknowledges commands; see Acknowledgements. A heartbeat can carry only `acks`, with `runs` empty, when a hook finishes after its run has ended.
 
 `stopped: true` means the SDK has received a `stop` for that run (Python 0.4+; older SDKs leave it out). Use it to show how far a stop got:
 - **Stop sent, not received:** no heartbeat with `stopped: true` yet. The process may be dead or cut off.
@@ -182,6 +186,8 @@ The server should record each run's last heartbeat: a running run with no heartb
 
 Delivered in heartbeat responses and in checkpoint responses. Every command is safe to apply twice, so deliver at least once (for example, until the next heartbeat shows the effect). Unknown types are ignored.
 
+Every command except `limits` carries an `id`: a string the server chooses, identical each time it re-sends the same command and new for a new one. A second pause after a resume gets a new id. A quarantine's `quarantine` command has the same id for every run it's sent to. The SDK acknowledges commands by id (see Acknowledgements); a command without one is applied but not acknowledged, which is how servers before this change work.
+
 How the server does it (`fences-platform`): commands aren't queued, they're derived from the run's state and re-sent on every heartbeat and checkpoint reply:
 - `stop` while the run is `stopped_by_user`
 - `pause` until a heartbeat reports `paused: true`
@@ -191,11 +197,43 @@ How the server does it (`fences-platform`): commands aren't queued, they're deri
 
 | Command | Effect in the SDK | What the server does |
 |---|---|---|
-| `{"run_id", "type": "stop"}` | The next `checkpoint()` returns breach `stopped_by_user`; it sticks even if a later response says ok | Marks the run breached (`POST /api/runs/{id}/stop`) and sends this command, so a run between checkpoints learns within seconds |
+| `{"run_id", "type": "stop", "id", "by"?, "reason"?}` | The next `checkpoint()` returns breach `stopped_by_user`; it sticks even if a later response says ok. Runs the `on_stop` hook, once per run | Marks the run breached (`POST /api/runs/{id}/stop`) and sends this command, so a run between checkpoints learns within seconds |
 | `{"run_id", "type": "pause"}` | The next `checkpoint()` waits until resumed; heartbeats report `"paused": true`. After `pause_timeout_s` (default 1 h) with no resume, `checkpoint()` returns breach `paused` | Keep sending `pause` until the heartbeat reports `paused: true` |
 | `{"run_id", "type": "resume"}` | The waiting checkpoint returns and the agent carries on | Send once after the operator resumes |
 | `{"run_id", "type": "limits", "budget_usd"?, "max_iterations"?, "max_duration_ms"?, "max_tokens"?}` | Updates the run's limits locally, so the offline fallback matches | Send whenever limits change from the dashboard |
 | `{"run_id", "type": "approval", "approval_id", "granted", "by", "note", "amount_usd"}` | Answers a waiting `request_approval()`; if granted with an amount, raises the run's budget by it | See Approvals |
+| `{"run_id", "type": "quarantine", "id", "by"?, "reason"?}` | The run pauses at its next checkpoint, as with `pause`, and every guarded tool is blocked in the SDK too. Runs the `on_quarantine` hook, once per process per `id` | Sent to every running run of a quarantined agent, instead of `pause`, to SDKs that support it (python ≥0.5.0); older ones still get `pause`. Releasing the quarantine sends `resume` |
+
+### Acknowledgements
+
+The SDK acknowledges every command it applies that has an `id`, in the `acks` of its next heartbeat:
+
+```json
+{"run_id": "6f1c...", "id": "quarantine:research_agent:1791937400", "type": "quarantine", "received_at": 1791937490.2}
+{"run_id": "6f1c...", "id": "quarantine:research_agent:1791937400", "type": "quarantine", "hook": "failed", "detail": "RuntimeError: vault unreachable", "finished_at": 1791937491.0}
+```
+
+- **Receipt:** one ack per run and command `id`, as soon as the command is applied. A new ack sends the heartbeat at once, so acks arrive within a round trip, not after a 15-second wait. A command re-sent with the same `id` isn't acknowledged again.
+- **Hook result:** for `stop` and `quarantine` with a hook configured, a second ack when the hook finishes: `hook` is `ok`, `failed` (with `detail`, the error, ≤300 chars) or `timeout` (it ran past 30 seconds and is still going). The hook result is reported under the `run_id` that triggered it, even if the run has ended since.
+- **At least once:** an ack whose heartbeat fails is sent again with the next one. Keep the first `received_at`, and the latest `hook` result.
+
+**On the server**, record when each command `id` was first sent and when it was acknowledged:
+- **Unacknowledged:** no ack within 30 seconds of sending (heartbeats come every 15 seconds, and every 2 while a run is busy) means the process didn't get it: it's dead, cut off or stuck in synchronous code. Show "agent hasn't acknowledged", fire the agent's containment webhooks, page again and raise the incident's severity.
+- **Hook results** go on the incident timeline: "on_quarantine ran in the agent: ok", or "failed: <detail>".
+- Only SDKs that send acks can be held to this (python ≥0.5.0, from `X-Fences-SDK`). For older ones, keep using `stopped` and `paused` in the heartbeat.
+
+### Containment hooks in the SDK
+
+`init(on_stop=..., on_quarantine=...)` runs a function in the agent's process when a `stop` or `quarantine` command arrives, to contain what the server can't reach, for example revoking a credential the agent holds:
+
+```python
+def revoke(event):  # {"type": "quarantine", "run_id", "agent_name", "id", "by", "reason"}
+    vault.revoke(f"agent/{event['agent_name']}")
+
+agentfences.init(api_key="fc_...", on_quarantine=revoke)
+```
+
+Each hook runs in its own background thread, never on the agent's thread or the heartbeat's. `on_stop` runs once per run, and `on_quarantine` once per process per quarantine (`id`), however many runs receive it. An exception is caught and reported as `failed`; a hook still running after 30 seconds is reported as `timeout` and left to finish. At exit, and in `flush()`, the SDK waits for running hooks (up to 30 seconds) and sends the acknowledgements still waiting, in a heartbeat with `runs: []`, so a process that ends right after a stop still contains it and reports it.
 
 ### Approvals: `POST /api/runs/{run_id}/approvals`
 
@@ -244,7 +282,7 @@ The response body is ignored.
 
 ### Quarantine
 
-A quarantined agent: new runs get `423` at start (above); running runs get `pause`, and every guard check is denied. Releasing the quarantine resumes all of that agent's paused runs.
+A quarantined agent: new runs get `423` at start (above); running runs get `quarantine` (python ≥0.5.0) or `pause` (older SDKs), and every guard check is denied. Releasing the quarantine resumes all of that agent's paused runs.
 
 ### Which SDKs get live control
 
@@ -304,6 +342,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
+- **Python 0.5.0 (released 2026-10-13):** command `id`s and `acks` in the heartbeat, the `quarantine` command, `on_stop` / `on_quarantine` hooks with their results acknowledged. Server side: `fences-platform` 0a30ecf.
 - **Python 0.4.0 (released 2026-10-13):** `breach` on `end` for breaches the SDK decided, guarded tools (`/guard`: check and reserve before, settle after), `stopped` in heartbeat runs, unacknowledged and unresponsive stops. Budget prechecks before model calls, tool timeouts and cancelling a stuck async run need no server change. See ENFORCEMENT.md for what each part guarantees. Server side: `fences-platform` 8ad1be9.
 - **TypeScript 0.4.0 (released 2026-10-11):** live control in the TypeScript SDK.
 - **0.3 (released 2026-10-09, Python 0.3.0 and TypeScript 0.3.0):** tool and model calls as OpenTelemetry-shaped spans (`/spans`), the `X-Fences-SDK` header, optional limits and dashboard-owned limits (null at run start, no-budget runs allowed with notices), run-start `context` and the effective-limits adoption, quarantine (423), `exception` on end, heartbeat, commands, approvals, the `paused` breach. Server step counting and timing documented as authoritative. `raise_on_breach` is gone from the SDK, so breaches are only ever results. Server side: `fences-platform` c09c70f..212487a.
