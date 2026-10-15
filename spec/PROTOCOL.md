@@ -10,6 +10,7 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 | Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 |
 | Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | 0.5.0 (unreleased) |
 | Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 | 0.5.0 (unreleased) |
+| Waiting at a limit (`on_breach="hold"`, `held` in the heartbeat) | 0.6.0 (unreleased) | 0.6.0 (unreleased) |
 | SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
 | SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 | 0.5.0 (unreleased) |
 | SDK-only, no protocol involved: budget prechecks before model calls | 0.4.0 | not yet (needs model-call instrumentation) |
@@ -174,7 +175,7 @@ A background thread in each process with live runs sends this every 15 seconds (
 
 **Response:** `{"commands": [...]}` with any commands for those runs.
 
-`acks` (Python 0.5+) acknowledges commands; see Acknowledgements. A heartbeat can carry only `acks`, with `runs` empty, when a hook finishes after its run has ended.
+`acks` (Python 0.5+) acknowledges commands; see Acknowledgements. `held` (0.6+, only while it applies) says a run is paused because it's waiting at a limit, not because someone paused it; see "Waiting at a limit". A heartbeat can carry only `acks`, with `runs` empty, when a hook finishes after its run has ended.
 
 `stopped: true` means the SDK has received a `stop` for that run (Python 0.4+; older SDKs leave it out). Use it to show how far a stop got:
 - **Stop sent, not received:** no heartbeat with `stopped: true` yet. The process may be dead or cut off.
@@ -186,6 +187,8 @@ The server should record each run's last heartbeat: a running run with no heartb
 ### Commands
 
 Delivered in heartbeat responses and in checkpoint responses. Every command is safe to apply twice, so deliver at least once (for example, until the next heartbeat shows the effect). Unknown types are ignored.
+
+The SDK applies `limits` before the other commands in a reply, so a `resume` that releases a call held for budget re-checks it against the raised limit, whatever order the reply lists them in.
 
 Every command except `limits` carries an `id`: a string the server chooses, identical each time it re-sends the same command and new for a new one. A second pause after a resume gets a new id. A quarantine's `quarantine` command has the same id for every run it's sent to. The SDK acknowledges commands by id (see Acknowledgements); a command without one is applied but not acknowledged, which is how servers before this change work.
 
@@ -223,6 +226,23 @@ The SDK acknowledges every command it applies that has an `id`, in the `acks` of
 - **Unacknowledged:** no ack within 30 seconds of sending (heartbeats come every 15 seconds, and every 2 while a run is busy) means the process didn't get it: it's dead, cut off or stuck in synchronous code. Show "agent hasn't acknowledged", fire the agent's containment webhooks, page again and raise the incident's severity.
 - **Hook results** go on the incident timeline: "on_quarantine ran in the agent: ok", or "failed: <detail>".
 - Only SDKs that send acks can be held to this (python ≥0.5.0 and js ≥0.5.0, from `X-Fences-SDK`). For older ones, keep using `stopped` and `paused` in the heartbeat.
+
+### Waiting at a limit
+
+An agent can opt in to wait at a limit instead of ending: `init(on_breach="hold")` or `governed(on_breach="hold")` in Python, `onBreach: "hold"` in TypeScript. Whoever is on call raises the limit, and the agent carries on where it was.
+
+**In the SDK.** With hold on:
+- A breach the server decides (`budget_exceeded`, `iteration_limit`, `time_limit`, `token_limit`, `key_daily_budget`, `key_monthly_budget`, `limit_reached`) makes `checkpoint()` wait, like a pause. Heartbeats report the run with `"paused": true, "held": "breach"`.
+- A call refused for budget before it's made also waits, with `"held": "budget"`: a model call refused by the budget precheck (Python), or a guarded tool denied with a budget breach.
+- **Released** by a `resume` command. A held breach then returns ok from `checkpoint()`, and a held call is checked again with the new limits (and waits again if it still doesn't fit).
+- **Ends** on a `stop` (the breach is `stopped_by_user`), or after `pause_timeout_s` (default 1 h) with the original breach, e.g. `budget_exceeded`, not `paused`, so the agent wraps up as it would have.
+- **Never holds** a breach the SDK decided because the server couldn't be reached, or anything in local mode: there's no one to raise the limit.
+
+**On the server:**
+- Store `held` on the run and show it: "Held at a limit: raise it to carry on" (`breach`), or "Held: the next call needs more budget" (`budget`), with the time it waits until.
+- **Never send the automatic `resume`** (the one for "the SDK reports paused but no pause is requested") to a run reporting `held`. Only an operator releases it: "Raise limits & resume" raises the limits, sets a breached run back to `running`, and sends `resume`.
+- **Keep sending `stop`, `quarantine` and `limits` to a held run,** even though a `breach` hold leaves the run `breached`. Otherwise a stop never reaches it and it waits out its timeout.
+- A held run is alive and waiting on a person. Treat its heartbeats as normal, and don't call it stuck. Open the incident for its breach as usual, so someone is paged to raise the limit.
 
 ### Containment hooks in the SDK
 
@@ -344,6 +364,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
+- **Python 0.6.0, TypeScript 0.6.0 (unreleased):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
 - **Python 0.5.2, TypeScript 0.5.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
 - **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
 - **TypeScript 0.5.0 (unreleased):** guarded tools, `stopped` in the heartbeat, `breach` on `end`, command acknowledgements, the `quarantine` command and `onStop` / `onQuarantine` hooks: the protocol side of Python 0.4.0 and 0.5.0. Not budget prechecks, which need model-call instrumentation.
