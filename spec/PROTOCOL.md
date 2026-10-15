@@ -216,7 +216,8 @@ The SDK acknowledges every command it applies that has an `id`, in the `acks` of
 
 - **Receipt:** one ack per run and command `id`, as soon as the command is applied. A new ack sends the heartbeat at once, so acks arrive within a round trip, not after a 15-second wait. A command re-sent with the same `id` isn't acknowledged again.
 - **Hook result:** for `stop` and `quarantine` with a hook configured, a second ack when the hook finishes: `hook` is `ok`, `failed` (with `detail`, the error, ≤300 chars) or `timeout` (it ran past 30 seconds and is still going). The hook result is reported under the `run_id` that triggered it, even if the run has ended since.
-- **At least once:** an ack whose heartbeat fails is sent again with the next one. Keep the first `received_at`, and the latest `hook` result.
+- **At least once:** an ack whose heartbeat fails (a network error, `429` or a `5xx`) is sent again with the next one. Any other `4xx` drops it, since resending won't help. Keep the first `received_at`, and the latest `hook` result.
+- **Rate limits:** answer a heartbeat over its budget with `429`, never by dropping it silently. The SDK keeps that heartbeat's acks for the next one, and its checkpoints, guards and other calls aren't affected.
 
 **On the server**, record when each command `id` was first sent and when it was acknowledged:
 - **Unacknowledged:** no ack within 30 seconds of sending (heartbeats come every 15 seconds, and every 2 while a run is busy) means the process didn't get it: it's dead, cut off or stuck in synchronous code. Show "agent hasn't acknowledged", fire the agent's containment webhooks, page again and raise the incident's severity.
@@ -343,6 +344,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
+- **Python 0.5.2, TypeScript 0.5.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
 - **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
 - **TypeScript 0.5.0 (unreleased):** guarded tools, `stopped` in the heartbeat, `breach` on `end`, command acknowledgements, the `quarantine` command and `onStop` / `onQuarantine` hooks: the protocol side of Python 0.4.0 and 0.5.0. Not budget prechecks, which need model-call instrumentation.
 
