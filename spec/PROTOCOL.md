@@ -8,10 +8,11 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 |---|---|---|
 | Runs, checkpoints, limits (including dashboard-owned and no-budget), run context, notices, quarantine, decisions, spans, errors on run end, `X-Fences-SDK` | 0.3.0 | 0.3.0 |
 | Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 |
-| Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | not yet |
-| Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 | not yet |
+| Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | 0.5.0 (unreleased) |
+| Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 | 0.5.0 (unreleased) |
 | SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
-| SDK-only, no protocol involved: budget prechecks before model calls, tool timeouts, cancelling a stuck async run after a stop | 0.4.0 | not yet |
+| SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 | 0.5.0 (unreleased) |
+| SDK-only, no protocol involved: budget prechecks before model calls | 0.4.0 | not yet (needs model-call instrumentation) |
 
 The server (`fences-platform`) implements everything in this file. It decides which SDKs get live control from `X-Fences-SDK` (see "Which SDKs get live control").
 
@@ -202,7 +203,7 @@ How the server does it (`fences-platform`): commands aren't queued, they're deri
 | `{"run_id", "type": "resume"}` | The waiting checkpoint returns and the agent carries on | Send once after the operator resumes |
 | `{"run_id", "type": "limits", "budget_usd"?, "max_iterations"?, "max_duration_ms"?, "max_tokens"?}` | Updates the run's limits locally, so the offline fallback matches | Send whenever limits change from the dashboard |
 | `{"run_id", "type": "approval", "approval_id", "granted", "by", "note", "amount_usd"}` | Answers a waiting `request_approval()`; if granted with an amount, raises the run's budget by it | See Approvals |
-| `{"run_id", "type": "quarantine", "id", "by"?, "reason"?}` | The run pauses at its next checkpoint, as with `pause`, and every guarded tool is blocked in the SDK too. Runs the `on_quarantine` hook, once per process per `id` | Sent to every running run of a quarantined agent, instead of `pause`, to SDKs that support it (python ≥0.5.0); older ones still get `pause`. Releasing the quarantine sends `resume` |
+| `{"run_id", "type": "quarantine", "id", "by"?, "reason"?}` | The run pauses at its next checkpoint, as with `pause`, and every guarded tool is blocked in the SDK too. Runs the `on_quarantine` hook, once per process per `id` | Sent to every running run of a quarantined agent, instead of `pause`, to SDKs that support it (python ≥0.5.0, js ≥0.5.0); older ones still get `pause`. Releasing the quarantine sends `resume` |
 
 ### Acknowledgements
 
@@ -220,7 +221,7 @@ The SDK acknowledges every command it applies that has an `id`, in the `acks` of
 **On the server**, record when each command `id` was first sent and when it was acknowledged:
 - **Unacknowledged:** no ack within 30 seconds of sending (heartbeats come every 15 seconds, and every 2 while a run is busy) means the process didn't get it: it's dead, cut off or stuck in synchronous code. Show "agent hasn't acknowledged", fire the agent's containment webhooks, page again and raise the incident's severity.
 - **Hook results** go on the incident timeline: "on_quarantine ran in the agent: ok", or "failed: <detail>".
-- Only SDKs that send acks can be held to this (python ≥0.5.0, from `X-Fences-SDK`). For older ones, keep using `stopped` and `paused` in the heartbeat.
+- Only SDKs that send acks can be held to this (python ≥0.5.0 and js ≥0.5.0, from `X-Fences-SDK`). For older ones, keep using `stopped` and `paused` in the heartbeat.
 
 ### Containment hooks in the SDK
 
@@ -341,6 +342,9 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 ---
 
 ## Changes to this file
+
+- **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
+- **TypeScript 0.5.0 (unreleased):** guarded tools, `stopped` in the heartbeat, `breach` on `end`, command acknowledgements, the `quarantine` command and `onStop` / `onQuarantine` hooks: the protocol side of Python 0.4.0 and 0.5.0. Not budget prechecks, which need model-call instrumentation.
 
 - **Python 0.5.0 (released 2026-10-13):** command `id`s and `acks` in the heartbeat, the `quarantine` command, `on_stop` / `on_quarantine` hooks with their results acknowledged. Server side: `fences-platform` 0a30ecf.
 - **Python 0.4.0 (released 2026-10-13):** `breach` on `end` for breaches the SDK decided, guarded tools (`/guard`: check and reserve before, settle after), `stopped` in heartbeat runs, unacknowledged and unresponsive stops. Budget prechecks before model calls, tool timeouts and cancelling a stuck async run need no server change. See ENFORCEMENT.md for what each part guarantees. Server side: `fences-platform` 8ad1be9.
