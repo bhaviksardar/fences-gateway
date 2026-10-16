@@ -8,11 +8,11 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 |---|---|---|
 | Runs, checkpoints, limits (including dashboard-owned and no-budget), run context, notices, quarantine, decisions, spans, errors on run end, `X-Fences-SDK` | 0.3.0 | 0.3.0 |
 | Live control: heartbeat, `stop` / `pause` / `resume` / `limits` / `approval` commands, `request_approval` | 0.3.0 | 0.4.0 |
-| Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | 0.5.0 (unreleased) |
-| Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 | 0.5.0 (unreleased) |
-| Waiting at a limit (`on_breach="hold"`, `held` in the heartbeat) | 0.6.0 (unreleased) | 0.6.0 (unreleased) |
+| Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | 0.5.0 |
+| Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 (0.5.2 for the fixes) | 0.5.0 (0.6.0 for the 429 fix) |
+| Waiting at a limit (`on_breach="hold"`, `held` in the heartbeat) | 0.6.0 | 0.6.0 |
 | SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
-| SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 | 0.5.0 (unreleased) |
+| SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 | 0.5.0 |
 | SDK-only, no protocol involved: budget prechecks before model calls | 0.4.0 | not yet (needs model-call instrumentation) |
 
 The server (`fences-platform`) implements everything in this file. It decides which SDKs get live control from `X-Fences-SDK` (see "Which SDKs get live control").
@@ -364,10 +364,10 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
-- **Python 0.6.0, TypeScript 0.6.0 (unreleased):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
-- **Python 0.5.2, TypeScript 0.5.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
+- **Python 0.6.0, TypeScript 0.6.0 (released 2026-10-16):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
+- **Python 0.5.2, TypeScript 0.6.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
 - **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
-- **TypeScript 0.5.0 (unreleased):** guarded tools, `stopped` in the heartbeat, `breach` on `end`, command acknowledgements, the `quarantine` command and `onStop` / `onQuarantine` hooks: the protocol side of Python 0.4.0 and 0.5.0. Not budget prechecks, which need model-call instrumentation.
+- **TypeScript 0.5.0 (released 2026-10-15, before the 429 fix: a heartbeat answered `429` loses its acks, as in Python 0.5.0/0.5.1; fixed in TypeScript 0.6.0):** guarded tools, `stopped` in the heartbeat, `breach` on `end`, command acknowledgements, the `quarantine` command and `onStop` / `onQuarantine` hooks: the protocol side of Python 0.4.0 and 0.5.0. Not budget prechecks, which need model-call instrumentation.
 
 - **Python 0.5.0 (released 2026-10-13):** command `id`s and `acks` in the heartbeat, the `quarantine` command, `on_stop` / `on_quarantine` hooks with their results acknowledged. Server side: `fences-platform` 0a30ecf.
 - **Python 0.4.0 (released 2026-10-13):** `breach` on `end` for breaches the SDK decided, guarded tools (`/guard`: check and reserve before, settle after), `stopped` in heartbeat runs, unacknowledged and unresponsive stops. Budget prechecks before model calls, tool timeouts and cancelling a stuck async run need no server change. See ENFORCEMENT.md for what each part guarantees. Server side: `fences-platform` 8ad1be9.
