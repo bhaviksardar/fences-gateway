@@ -87,6 +87,8 @@ Sent after each step (usually each model call). Spend and tokens are **this step
 
 The server adds `cost_delta_usd` and `tokens_used` to the run, counts the step itself and measures time itself (`iterations` and `duration_ms` are sent but ignored), then checks limits.
 
+Optional `step_id` (a string of 1 to 64 characters, unique within the run; the SDKs send 32 hex characters): a repeat of the same `(run_id, step_id)` isn't counted again. The server answers it with the run's current totals, or its breach, with commands attached as usual, and echoes `"step_id"` in every reply to a request that had one. The echo tells the SDK this server deduplicates steps, so a checkpoint that hit a connection error can safely be sent again. Without `step_id` every request counts.
+
 **Limit rules** (the SDK applies the same ones locally): a limit trips once **exceeded**, not when reached; spend is compared after `round(spent, 9)`; when several trip at once the order is spend, steps, time, tokens; `max_tokens: 0` means no token limit.
 
 **Response, within limits**
@@ -367,7 +369,8 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
-- **Python 0.8.0, TypeScript 0.8.0 (not yet released):** how the SDKs read replies, with no change to the wire format. A 401 / 403 after run start (a key revoked mid-run) no longer raises in the agent: the run ends at its next checkpoint with `fences_unreachable`. Only numbers are adopted from `limits`, checkpoint replies and `limits` commands; a null `budget_usd` still means unlimited. A JSON reply that isn't an object counts as not JSON. An approval request answered with an error is denied at once. SDK-only, alongside: TypeScript records OpenAI and Anthropic calls and prechecks them against the budget (`instrument(client)`); Python halts a sync or streaming run stuck after a stop.
+- **Next SDK release (unreleased):** checkpoints carry an optional `step_id` (32 hex characters, unique within the run); a server that supports it counts a repeated `(run_id, step_id)` once, returns the run's current totals (or its breach), and echoes `step_id` in the reply. The SDK retries a checkpoint once after a connection error only after seeing that echo. Guard calls are retried once after a connection error under their `guard_id`. SDK-only, alongside: a circuit breaker on calls to Fences, and heartbeat backoff with jitter.
+- **Python 0.8.0, TypeScript 0.8.0 (released 2026-10-17):** how the SDKs read replies, with no change to the wire format. A 401 / 403 after run start (a key revoked mid-run) no longer raises in the agent: the run ends at its next checkpoint with `fences_unreachable`. Only numbers are adopted from `limits`, checkpoint replies and `limits` commands; a null `budget_usd` still means unlimited. A JSON reply that isn't an object counts as not JSON. An approval request answered with an error is denied at once. SDK-only, alongside: TypeScript records OpenAI and Anthropic calls and prechecks them against the budget (`instrument(client)`); Python halts a sync or streaming run stuck after a stop.
 - **Python 0.6.0, TypeScript 0.6.0 (released 2026-10-16):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
 - **Python 0.5.2, TypeScript 0.6.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
 - **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
