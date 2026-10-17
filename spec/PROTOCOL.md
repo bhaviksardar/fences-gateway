@@ -11,9 +11,12 @@ What the `agentfences` SDKs (Python in `sdk/`, TypeScript in `sdk-js/`) send to 
 | Guarded tools (`/guard`: checked and reserved before they run), `stopped` in the heartbeat, `breach` on `end` | 0.4.0 | 0.5.0 |
 | Command `id`s and acknowledgements (`acks` in the heartbeat), the `quarantine` command, `on_stop` / `on_quarantine` hooks | 0.5.0 (0.5.2 for the fixes) | 0.5.0 (0.6.0 for the 429 fix) |
 | Waiting at a limit (`on_breach="hold"`, `held` in the heartbeat) | 0.6.0 | 0.6.0 |
-| SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording, LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
-| SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 | 0.5.0 |
-| SDK-only, no protocol involved: budget prechecks before model calls | 0.4.0 | not yet (needs model-call instrumentation) |
+| SDK-only features, no protocol involved: automatic OpenAI/Anthropic call recording | 0.3.0 | 0.8.0 (`instrument(client)`) |
+| SDK-only, no protocol involved: LangChain/LangGraph and OpenAI Agents SDK integrations | 0.3.0 | not yet |
+| SDK-only, no protocol involved: tool timeouts, halting a stuck run after a stop | 0.4.0 (sync and streaming runs: 0.8.0) | 0.5.0 |
+| SDK-only, no protocol involved: budget prechecks before model calls | 0.4.0 | 0.8.0 (with `instrument(client)`) |
+| SDK-only, no protocol involved: recording and guarding MCP tool calls (`mcp.wrap`) | 0.7.0 | 0.7.0 |
+| A 401 / 403 after run start ends the run (`fences_unreachable`) instead of raising; only numbers in replies are adopted | 0.8.0 | 0.8.0 |
 
 The server (`fences-platform`) implements everything in this file. It decides which SDKs get live control from `X-Fences-SDK` (see "Which SDKs get live control").
 
@@ -32,7 +35,7 @@ The server (`fences-platform`) implements everything in this file. It decides wh
 | Response | Core endpoints (start, checkpoint, decisions, end) | Optional endpoints (spans, heartbeat, approvals, guard) |
 |---|---|---|
 | 2xx with JSON | Use the body | Use the body |
-| 401 / 403 | Raises `PermissionError` in the agent: a bad key must be noticed | `{"ok": false}`, never raises |
+| 401 / 403 | At run start: raises `FencesAuthError` (a `PermissionError` in Python) before any agent code runs, so a bad key is noticed. Later in the run (a revoked key): nothing raises, and the run ends at its next checkpoint with `fences_unreachable` | `{"ok": false}`, never raises (a guarded tool is blocked) |
 | 409 | Read as "this run is already fenced" | `{"ok": false}` |
 | 423 | Run start only: the agent is quarantined (see below) | – |
 | 404 / 405 with `{"detail": "Not Found"}` or `{"detail": "Method Not Allowed"}` | Network error | **The endpoint doesn't exist on this server.** The SDK warns once and stops using it (a guarded tool is then blocked) |
@@ -344,7 +347,7 @@ What `checkpoint()` can return as `breach_type`, each with its own `message` and
 | `stopped_by_user` | server, or a `stop` command | Someone pressed Stop |
 | `budget_exceeded` (prechecked) | SDK | A model call refused before it was sent because its worst case could have passed the budget; reported in `end`'s `breach`, as spend never crossed the budget on the server |
 | `paused` | SDK | Paused and not resumed within `pause_timeout_s` |
-| `fences_unreachable` | SDK | Server unreachable and `init(fail_closed=True)` |
+| `fences_unreachable` | SDK | Server unreachable and `init(fail_closed=True)`, or the API key was rejected during the run |
 | `limit_reached` | either | Fallback when the server gave no reason |
 
 New breach types need a message and system prompt in the SDK (`_make_breach_result`); until then the agent sees a generic "Governance limit reached."
@@ -364,6 +367,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
+- **Python 0.8.0, TypeScript 0.8.0 (not yet released):** how the SDKs read replies, with no change to the wire format. A 401 / 403 after run start (a key revoked mid-run) no longer raises in the agent: the run ends at its next checkpoint with `fences_unreachable`. Only numbers are adopted from `limits`, checkpoint replies and `limits` commands; a null `budget_usd` still means unlimited. A JSON reply that isn't an object counts as not JSON. An approval request answered with an error is denied at once. SDK-only, alongside: TypeScript records OpenAI and Anthropic calls and prechecks them against the budget (`instrument(client)`); Python halts a sync or streaming run stuck after a stop.
 - **Python 0.6.0, TypeScript 0.6.0 (released 2026-10-16):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
 - **Python 0.5.2, TypeScript 0.6.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
 - **Python 0.5.1:** fixes 0.5.0 sending heartbeats back to back while its agent was quarantined (the server re-sends `quarantine` on every reply). No protocol change.
