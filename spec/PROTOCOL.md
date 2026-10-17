@@ -127,7 +127,7 @@ Tool calls, model calls and approvals, as spans shaped like OpenTelemetry's and 
                   "fences.cost_usd": 0.004, "fences.iteration": 3}},
   {"name": "execute_tool web_search", "start_ts": 1791161642.31, "end_ts": 1791161642.72, "status": "error",
    "attributes": {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "web_search",
-                  "gen_ai.tool.call.arguments": "query='cats', limit=5", "error.type": "PermissionError",
+                  "gen_ai.tool.call.arguments": "query, limit", "error.type": "PermissionError",
                   "fences.error.message": "PermissionError: 403 from search API", "fences.iteration": 3}}
 ]}
 ```
@@ -137,7 +137,7 @@ Every span has `name`, `start_ts` and `end_ts` (Unix seconds), `status` (`ok` or
 | Span `name` | `gen_ai.operation.name` | Attributes |
 |---|---|---|
 | `chat {model}` | `chat` | `gen_ai.provider.name` (`openai`, `anthropic`, or what LangChain reports), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.request.stream` (streamed calls have no usage); usage: `gen_ai.usage.input_tokens` (**includes** cache reads and writes, per OpenTelemetry), `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.output_tokens`, `fences.cost_usd` |
-| `execute_tool {name}` | `execute_tool` | `gen_ai.tool.name`, `gen_ai.tool.call.arguments` (a summary, ≤300 chars), `gen_ai.tool.call.id` when known |
+| `execute_tool {name}` | `execute_tool` | `gen_ai.tool.name`, `gen_ai.tool.call.arguments` (≤300 chars: the argument names by default, e.g. `query, limit`; a summary of the values with `tool_arguments="full"`; absent with `"none"`), `gen_ai.tool.call.id` when known |
 | `fences.approval` | – | One span from request to answer: `fences.approval.id`, `.reason`, `.amount_usd`, `.granted`, `.by`, `.note`, `.granted_usd` |
 
 On every span: `fences.iteration` (the run's step count when it happened) and, if recorded through a framework, `fences.integration` (`langchain`, `openai-agents`). On failures: `error.type` (the exception class), `fences.error.message` (≤1000 chars) and, for HTTP errors, `http.response.status_code` (e.g. 429).
@@ -369,7 +369,7 @@ New breach types need a message and system prompt in the SDK (`_make_breach_resu
 
 ## Changes to this file
 
-- **Next SDK release (unreleased):** checkpoints carry an optional `step_id` (32 hex characters, unique within the run); a server that supports it counts a repeated `(run_id, step_id)` once, returns the run's current totals (or its breach), and echoes `step_id` in the reply. The SDK retries a checkpoint once after a connection error only after seeing that echo. Guard calls are retried once after a connection error under their `guard_id`. SDK-only, alongside: a circuit breaker on calls to Fences, and heartbeat backoff with jitter.
+- **Next SDK release, 0.9.0 (unreleased):** tool call spans carry argument names by default, not values (`init(tool_arguments="full")` / `toolArguments: "full"` restores them); guard checks and approval requests still send the values. Checkpoints carry an optional `step_id` (32 hex characters, unique within the run); a server that supports it counts a repeated `(run_id, step_id)` once, returns the run's current totals (or its breach), and echoes `step_id` in the reply. The SDK retries a checkpoint once after a connection error only after seeing that echo. Guard calls are retried once after a connection error under their `guard_id`. SDK-only, alongside: a circuit breaker on calls to Fences, and heartbeat backoff with jitter.
 - **Python 0.8.0, TypeScript 0.8.0 (released 2026-10-17):** how the SDKs read replies, with no change to the wire format. A 401 / 403 after run start (a key revoked mid-run) no longer raises in the agent: the run ends at its next checkpoint with `fences_unreachable`. Only numbers are adopted from `limits`, checkpoint replies and `limits` commands; a null `budget_usd` still means unlimited. A JSON reply that isn't an object counts as not JSON. An approval request answered with an error is denied at once. SDK-only, alongside: TypeScript records OpenAI and Anthropic calls and prechecks them against the budget (`instrument(client)`); Python halts a sync or streaming run stuck after a stop.
 - **Python 0.6.0, TypeScript 0.6.0 (released 2026-10-16):** waiting at a limit: `on_breach="hold"`, `held` (`breach` or `budget`) in heartbeat runs, released only by an operator's `resume`.
 - **Python 0.5.2, TypeScript 0.6.0:** a heartbeat answered `429` keeps its acks for the next one (Python 0.5.1 dropped them, so the server could flag commands the agent had received as unacknowledged).
