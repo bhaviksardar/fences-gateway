@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	gosync "sync"
 	"time"
@@ -66,7 +67,8 @@ type Syncer struct {
 	// Health is the health object to send; Syncer sets its bundle_error.
 	Health func() map[string]any
 	// Apply carries out a command. Each command is applied once, in the order listed, and acknowledged in the next
-	// sync, as often as the platform re-sends it.
+	// sync, as often as the platform re-sends it. It runs inside the sync loop, so it must not block: start slow work
+	// (a containment action) in a goroutine and report the result with Ack.
 	Apply func(Command)
 	// Urgent says an approval is pending, so the next sync comes in 2 s rather than sync_interval_s.
 	Urgent func() bool
@@ -170,7 +172,7 @@ func (s *Syncer) Once(ctx context.Context) error {
 
 	health := map[string]any{}
 	if s.Health != nil {
-		health = s.Health()
+		health = maps.Clone(s.Health()) // the caller's map isn't ours to change
 	}
 	health["bundle_error"] = nil
 	if bundleErr != nil {
@@ -195,7 +197,7 @@ func (s *Syncer) Once(ctx context.Context) error {
 	if len(reply.Bundle) > 0 && string(reply.Bundle) != "null" {
 		err := s.Store.Apply(reply.Bundle)
 		if err != nil {
-			s.Log.Error("fences: bundle refused", "err", err)
+			s.Log.Error("fences: problem with the new bundle", "err", err)
 		}
 		s.mu.Lock()
 		s.bundleErr = err
@@ -268,11 +270,13 @@ func shipOnce(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) 
 		Seq int64 `json:"seq"`
 	}
 	json.Unmarshal(events[len(events)-1], &last)
-	// A 409 (the platform has the whole batch already) leaves the reply as it is, so the batch counts as acked
-	reply := struct {
-		AckedSeq int64 `json:"acked_seq"`
-	}{last.Seq}
-	err = c.Post(ctx, "/api/gateways/decisions", map[string]any{"events": events}, &reply)
+	var reply struct {
+		AckedSeq *int64 `json:"acked_seq"`
+	}
+	err = c.post(ctx, "/api/gateways/decisions", map[string]any{"events": events}, &reply, true)
+	if err == errRepeat { // the platform has the whole batch already
+		return q.Ack(last.Seq)
+	}
 	if errors.Is(err, ErrForbidden) {
 		// The batch named an agent this gateway doesn't serve: drop it (spec, Conventions), or it would block the rest
 		log.Error("fences: the platform refused a batch of decision events for an agent this gateway doesn't serve; dropped",
@@ -282,5 +286,8 @@ func shipOnce(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) 
 	if err != nil {
 		return err
 	}
-	return q.Ack(reply.AckedSeq)
+	if reply.AckedSeq == nil { // without it, nothing is known to be stored
+		return errors.New("sync: the decisions reply has no acked_seq")
+	}
+	return q.Ack(*reply.AckedSeq)
 }

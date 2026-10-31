@@ -30,6 +30,7 @@ type platform struct {
 	syncs       []map[string]any
 	stored      map[int64]bool
 	status      int // forced reply status for /decisions and /sync, 0 for normal
+	emptyReply  bool
 	syncFails   int // how many syncs to answer 503 first
 	commandAckd bool
 	ignoreAcks  bool // re-send the command even once it is acked
@@ -92,6 +93,10 @@ func (p *platform) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(reply)
 	case "/api/gateways/decisions":
+		if p.emptyReply {
+			w.Write([]byte("{}"))
+			return
+		}
 		var req struct {
 			Events []struct{ Seq int64 } `json:"events"`
 		}
@@ -226,6 +231,10 @@ func TestShip(t *testing.T) {
 	p.status = 500
 	if shipOnce(context.Background(), c, q, nil) == nil || q.Depth() != 1 {
 		t.Error("a 500 must keep the events queued")
+	}
+	p.status, p.emptyReply = 0, true
+	if shipOnce(context.Background(), c, q, nil) == nil || q.Depth() != 1 {
+		t.Error("a reply without acked_seq must keep the events queued")
 	}
 }
 

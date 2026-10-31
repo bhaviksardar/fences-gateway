@@ -14,7 +14,7 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
   - The URL must be https, or http to localhost, and redirects are never followed.
   - `Syncer` runs the heartbeat and bundle pull: ±20% jitter, every 2 s while an approval is pending, 1 s backoff doubling to 5 minutes with full jitter, and a circuit that opens after 5 failures and then tries once a minute.
   - A command is applied once and acknowledged each time the platform re-sends it. A malformed command is skipped. On `401`, syncing stops and an error is logged every minute.
-  - `Ship` sends queued events every 2 s, or once 100 are waiting, up to 500 per batch. A `409` counts as acknowledged, and a `403` batch is dropped and logged.
+  - `Ship` sends queued events every 2 s, or once 100 are waiting, up to 500 per batch. A `409` counts as acknowledged, and a `403` batch is dropped and logged. A reply without `acked_seq` keeps the batch queued.
 
 ## v0.0.1 (specs only, no gateway code)
 

@@ -27,6 +27,7 @@ import (
 var (
 	ErrRevoked   = errors.New("sync: the platform refused this client's key (401)")
 	ErrForbidden = errors.New("sync: the batch named an agent this client doesn't serve (403)")
+	errRepeat    = errors.New("sync: a repeat the platform already has (409)")
 )
 
 const maxReply = 32 << 20 // bytes; a bundle is the largest reply
@@ -123,7 +124,10 @@ func LoadIdentity(path string) (*Identity, error) {
 // Post sends body to path, signed with the client's key, and decodes the reply into out (if not nil). A 409 (a
 // repeat the platform already has) counts as success.
 func (c *Client) Post(ctx context.Context, path string, body, out any) error {
-	return c.post(ctx, path, body, out, true)
+	if err := c.post(ctx, path, body, out, true); err != errRepeat {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) post(ctx context.Context, path string, body, out any, signed bool) error {
@@ -162,7 +166,7 @@ func (c *Client) post(ctx context.Context, path string, body, out any, signed bo
 	case resp.StatusCode == http.StatusForbidden:
 		return ErrForbidden
 	case resp.StatusCode == http.StatusConflict:
-		return nil
+		return errRepeat
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return fmt.Errorf("sync: %s answered %d", path, resp.StatusCode)
 	}
