@@ -42,40 +42,53 @@ type Event struct {
 }
 
 const (
+	maxTarget   = 1000 // characters of an event's target: an agent chooses tool names and paths
+	maxEntries  = 50   // arguments listed in an event; a 51st entry says how many more there were
 	maxValue    = 300  // characters of one reported argument value
 	maxArgs     = 300  // characters of arguments before each value is cut to its share, as in the SDK
 	maxApproval = 2000 // characters of an approval summary, however many arguments
 )
 
 // Target names what a request reaches: "server/tool" (mcp), "METHOD /path" (http), "verb kind namespace/name" (k8s).
+// At most 1,000 characters.
 func Target(req policy.Request) string {
 	s := func(k string) string { v, _ := req[k].(string); return v }
+	t := ""
 	switch s("on") {
 	case "mcp":
-		return s("server") + "/" + s("tool")
+		t = s("server") + "/" + s("tool")
 	case "http":
-		return s("method") + " " + s("path")
+		t = s("method") + " " + s("path")
 	case "k8s":
-		return s("verb") + " " + s("kind") + " " + s("namespace") + "/" + s("name")
+		t = s("verb") + " " + s("kind") + " " + s("namespace") + "/" + s("name")
 	}
-	return ""
+	return cut(t, maxTarget)
 }
 
 // Arguments is what an event says about a request's arguments (an MCP call's args, an HTTP request's body fields):
-// their sorted names by default, or with values. Names and values are each clipped to 300 characters: the agent
-// chooses both.
+// their sorted names by default, or with values. Names and values are each clipped to 300 characters, and at most
+// 50 are listed: the agent chooses them all.
 func Arguments(req policy.Request, values bool) any {
 	args := arguments(req)
+	keys := slices.Sorted(maps.Keys(args))
+	more := len(keys) - maxEntries
+	keys = keys[:min(len(keys), maxEntries)]
 	if !values {
 		names := []string{} // [] rather than null for no arguments
-		for _, k := range slices.Sorted(maps.Keys(args)) {
+		for _, k := range keys {
 			names = append(names, cut(k, maxValue))
+		}
+		if more > 0 {
+			names = append(names, fmt.Sprintf("… %d more", more))
 		}
 		return names
 	}
-	out := make(map[string]string, len(args))
-	for k, v := range args {
-		out[cut(k, maxValue)] = cut(text(v), maxValue)
+	out := make(map[string]string, len(keys)+1)
+	for _, k := range keys {
+		out[cut(k, maxValue)] = cut(text(args[k]), maxValue)
+	}
+	if more > 0 {
+		out["…"] = fmt.Sprintf("%d more", more)
 	}
 	return out
 }

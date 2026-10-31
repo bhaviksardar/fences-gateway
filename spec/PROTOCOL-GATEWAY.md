@@ -13,13 +13,14 @@ The SDK's protocol is a separate file, [PROTOCOL.md](PROTOCOL.md). This one reus
 - **Transport:** HTTPS, `POST` with a JSON body, JSON responses. The gateway waits 5 seconds per request.
 - **Version:** every request carries `X-Fences-Client: gateway/0.1.0` (`device/0.1.0` from Fences Edge).
 - **Auth:** enrollment uses a one-time token. Every request after that is signed with the gateway's own key (see Signing requests).
-- **Ownership:** a gateway only receives bundles, commands and approvals for the agents its team assigned to it, and can only report for those agents. An event or approval request for any other agent is rejected (`403`), and nothing in the batch is stored.
+- **Ownership:** a gateway only receives bundles, commands and approvals for the agents its team assigned to it, and can only report for those agents. An approval request for any other agent is rejected (`403`). An event for any other agent isn't stored, and the rest of its batch is (see Decision events): an agent unassigned or revoked while its events were queued mustn't cost the others theirs.
 
 | Response | What the gateway does |
 |---|---|
 | 2xx with JSON | Uses the body |
 | 401 | Its key was revoked or never enrolled. It keeps enforcing the last good bundle, stops syncing, and logs an error every minute. It never fails open because of this. |
-| 403 | The batch named an agent this gateway doesn't serve. It drops that batch and logs it. |
+| 403 | The request named an agent this gateway doesn't serve. It drops that request and logs it. |
+| Any other 4xx (400, 413, 422) | The platform will never accept this request as it is. A batch of events is dropped and logged, so it can't hold up the queue behind it. Other requests count as failed. |
 | 409 | A repeat the platform already has. Treated as success. |
 | 429, 5xx, timeout, non-JSON | Backs off and retries (see Sync) |
 
@@ -143,7 +144,9 @@ One event for every request the gateway decides. Events go into a local SQLite q
 | `latency_ms` | Time the gateway added: policy, queue and bookkeeping. It doesn't include the upstream. |
 | `upstream_status` | `ok` or `error` for MCP, the status code for HTTP, `null` for k8s or when the call wasn't forwarded. |
 
-**Response:** `{"acked_seq": 1048}`, the highest `seq` up to which the platform has stored every event. The gateway deletes events up to it and sends the rest again. An `acked_seq` above the highest `seq` the gateway has sent is taken as that `seq`, so a wrong answer can't delete events that were never sent. Delivery is **at least once**, and the platform stores each `(gateway_id, seq)` once.
+**Size.** An event's `target` is at most 1,000 characters and its `arguments` at most 50 entries; the gateway clips them (a cut `target` ends in `…`, and a 51st entry says how many more there were). A batch is at most 512 KB of JSON, so it stays inside the platform's request limit.
+
+**Response:** `{"acked_seq": 1048, "not_served": 0}`, the highest `seq` up to which the platform has stored every event. The gateway deletes events up to it and sends the rest again. An `acked_seq` above the highest `seq` the gateway has sent is taken as that `seq`, so a wrong answer can't delete events that were never sent. Delivery is **at least once**, and the platform stores each `(gateway_id, seq)` once. `not_served` counts the batch's events for agents this gateway doesn't serve, which weren't stored.
 
 If the platform is unreachable for a long time, the queue keeps up to 100,000 events (configurable). Past that it drops the oldest and counts them in `health.dropped_events`. It never blocks requests because the queue is full.
 
@@ -220,4 +223,5 @@ A decision made by the fail mode, not the policy, is reported with `degraded: tr
 
 ## Changes to this file
 
+- **Unreleased:** events for agents a gateway doesn't serve are skipped, not the batch; other 4xx answers drop a batch; event and batch size limits.
 - **Unreleased:** first version: enrollment, signed requests, sync, bundles, decision events, approvals, `quarantine` and `approval` commands, fail mode.

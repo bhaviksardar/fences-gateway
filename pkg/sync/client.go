@@ -28,6 +28,8 @@ var (
 	ErrRevoked   = errors.New("sync: the platform refused this client's key (401)")
 	ErrForbidden = errors.New("sync: the batch named an agent this client doesn't serve (403)")
 	errRepeat    = errors.New("sync: a repeat the platform already has (409)")
+	// ErrRejected is any other 4xx but 429: the platform will never accept this request as it is.
+	ErrRejected = errors.New("sync: the platform rejected the request as it is (4xx)")
 )
 
 const maxReply = 32 << 20 // bytes; a bundle is the largest reply
@@ -167,6 +169,8 @@ func (c *Client) post(ctx context.Context, path string, body, out any, signed bo
 		return ErrForbidden
 	case resp.StatusCode == http.StatusConflict:
 		return errRepeat
+	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
+		return fmt.Errorf("%w: %s answered %d", ErrRejected, path, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return fmt.Errorf("sync: %s answered %d", path, resp.StatusCode)
 	}

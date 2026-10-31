@@ -5,6 +5,8 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 ## Unreleased
 
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: argument names are clipped to 300 characters, as values are. An `acked_seq` above the highest `seq` sent counts as that `seq`.
+- `spec/PROTOCOL-GATEWAY.md` **(edge)**: an event for an agent the gateway doesn't serve isn't stored, and the rest of its batch is. The reply says how many in `not_served`. Any other 4xx answer to a batch drops it, so it can't hold up the queue behind it. An event's `target` is at most 1,000 characters, its `arguments` at most 50 entries, and a batch at most 512 KB.
+- `pkg/queue` **(edge)**: `Batch(n, maxBytes)` takes a size limit, so this is a breaking change before the first release. `pkg/sync` drops a batch the platform rejects with a 4xx (other than 429) and adds `ErrRejected`. `pkg/decisions` clips `target` and lists at most 50 arguments.
 - `spec/rules/README.md`: a gateway refuses `args` or `body` that repeat a key.
 - `spec/rules/README.md`: a new section, Possible requests, says which tools `tools/list` hides.
 - `pkg/policy`: the rules engine in Go **(edge)**. `Parse` rejects what `spec/rules/schema.json` rejects (apart from repeats in `quarantined` and `days`, which change nothing), plus duplicate ids, and data after the policy. `Decide` follows `spec/rules/README.md`, Deciding. It passes every policy case in `spec/conformance/`, which `conformance/conformance_test.go` checks in CI. Run limits aren't in it: the gateway doesn't enforce them.

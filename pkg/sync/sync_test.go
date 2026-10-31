@@ -263,3 +263,22 @@ func TestCheckURL(t *testing.T) {
 }
 
 func slogDiscard() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// A batch the platform will never accept (413, 422) is dropped, so it can't hold up the queue behind it
+func TestShipDropsRejected(t *testing.T) {
+	p, c, _ := setup(t)
+	q, _ := queue.Open(filepath.Join(t.TempDir(), "q.db"), 0)
+	defer q.Close()
+	for _, status := range []int{413, 422, 400} {
+		q.Push(map[string]any{})
+		p.status = status
+		if err := shipOnce(context.Background(), c, q, slogDiscard()); err != nil || q.Depth() != 0 {
+			t.Errorf("%d: %v, depth %d", status, err, q.Depth())
+		}
+	}
+	q.Push(map[string]any{})
+	p.status = 429
+	if shipOnce(context.Background(), c, q, slogDiscard()) == nil || q.Depth() != 1 {
+		t.Error("a 429 is retried, not dropped")
+	}
+}

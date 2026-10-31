@@ -225,7 +225,7 @@ func TestGateway(t *testing.T) {
 	}
 
 	// Every decision is an event
-	events, _ := h.queue.Batch(100)
+	events, _ := h.queue.Batch(100, 1<<20)
 	var got []string
 	var first map[string]any
 	unauth := map[string]bool{}
@@ -290,7 +290,7 @@ func TestApprovalPlatformDown(t *testing.T) {
 	if got := text(t, crm, "refund", nil); !strings.Contains(got, "can't be reached") {
 		t.Errorf("approval with the platform down: %q", got)
 	}
-	events, _ := h.queue.Batch(10)
+	events, _ := h.queue.Batch(10, 1<<20)
 	var ev map[string]any
 	json.Unmarshal(events[len(events)-1], &ev)
 	if ev["decision"] != "deny" || ev["degraded"] != true {

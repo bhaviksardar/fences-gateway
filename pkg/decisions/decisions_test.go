@@ -2,6 +2,7 @@ package decisions
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,19 @@ func TestDecisions(t *testing.T) {
 		}
 	}
 
+	many := map[string]any{"on": "mcp", "server": "s", "tool": strings.Repeat("t", 5000), "args": map[string]any{}}
+	for i := 0; i < 80; i++ {
+		many["args"].(map[string]any)[fmt.Sprintf("k%02d", i)] = i
+	}
+	if n := Arguments(many, false).([]string); len(n) != 51 || n[50] != "… 30 more" || n[0] != "k00" {
+		t.Errorf("names over 50: %d, last %q", len(n), n[len(n)-1])
+	}
+	if v := Arguments(many, true).(map[string]string); len(v) != 51 || v["…"] != "30 more" {
+		t.Errorf("values over 50: %d", len(v))
+	}
+	if n := len([]rune(Target(many))); n != 1000 {
+		t.Errorf("target is %d characters, want 1000", n)
+	}
 	long := req(t, `{"on":"mcp","server":"s","tool":"t","args":{"a":"`+strings.Repeat("x", 5000)+`","b":"​hidden","z":"last"}}`)
 	if n := Arguments(req(t, `{"on":"mcp","args":{"`+strings.Repeat("k", 5000)+`":1}}`), false).([]string)[0]; len(n) > 302 {
 		t.Errorf("name not clipped: %d bytes", len(n))
@@ -46,7 +60,7 @@ func TestDecisions(t *testing.T) {
 	if len([]rune(s)) > 2000 || !strings.Contains(s, `"z":"last"`) || !strings.Contains(s, `\u200bhidden`) {
 		t.Errorf("summary must keep every argument, escape invisible characters and stay ≤2000: %s", s)
 	}
-	many := map[string]any{"on": "mcp", "args": map[string]any{}}
+	many = map[string]any{"on": "mcp", "args": map[string]any{}}
 	for i := 0; i < 1000; i++ {
 		many["args"].(map[string]any)[strings.Repeat("k", 50)+string(rune('a'+i%26))+strings.Repeat("y", i)] = i
 	}

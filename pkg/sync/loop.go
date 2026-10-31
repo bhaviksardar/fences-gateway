@@ -263,7 +263,7 @@ func Ship(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) {
 }
 
 func shipOnce(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) error {
-	events, err := q.Batch(500)
+	events, err := q.Batch(500, 512<<10) // within the platform's request limit
 	if err != nil || len(events) == 0 {
 		return err
 	}
@@ -272,15 +272,16 @@ func shipOnce(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) 
 	}
 	json.Unmarshal(events[len(events)-1], &last)
 	var reply struct {
-		AckedSeq *int64 `json:"acked_seq"`
+		AckedSeq  *int64 `json:"acked_seq"`
+		NotServed int    `json:"not_served"`
 	}
 	err = c.post(ctx, "/api/gateways/decisions", map[string]any{"events": events}, &reply, true)
 	if err == errRepeat { // the platform has the whole batch already
 		return q.Ack(last.Seq)
 	}
-	if errors.Is(err, ErrForbidden) {
-		// The batch named an agent this gateway doesn't serve: drop it (spec, Conventions), or it would block the rest
-		log.Error("fences: the platform refused a batch of decision events for an agent this gateway doesn't serve; dropped",
+	if errors.Is(err, ErrForbidden) || errors.Is(err, ErrRejected) {
+		// The platform will never take this batch: drop it (spec, Conventions), or it would hold up every event behind it
+		log.Error("fences: the platform refused a batch of decision events; dropped", "err", err,
 			"events", len(events), "up_to_seq", last.Seq)
 		return q.Ack(last.Seq)
 	}
@@ -289,6 +290,9 @@ func shipOnce(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) 
 	}
 	if reply.AckedSeq == nil { // without it, nothing is known to be stored
 		return errors.New("sync: the decisions reply has no acked_seq")
+	}
+	if reply.NotServed > 0 {
+		log.Warn("fences: decision events for agents this gateway doesn't serve weren't stored", "events", reply.NotServed)
 	}
 	return q.Ack(*reply.AckedSeq)
 }

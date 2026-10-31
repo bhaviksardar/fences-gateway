@@ -91,8 +91,9 @@ func (q *Queue) Push(event any) (int64, error) {
 	return seq, nil
 }
 
-// Batch returns up to n of the oldest events, each with its "seq" added, ready to send as {"events": [...]}.
-func (q *Queue) Batch(n int) ([]json.RawMessage, error) {
+// Batch returns up to n of the oldest events, each with its "seq" added, ready to send as {"events": [...]}, and at
+// most maxBytes of them (but always the oldest one, whatever its size).
+func (q *Queue) Batch(n, maxBytes int) ([]json.RawMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	rows, err := q.db.Query(`SELECT seq, data FROM events ORDER BY seq LIMIT ?`, n)
@@ -101,6 +102,7 @@ func (q *Queue) Batch(n int) ([]json.RawMessage, error) {
 	}
 	defer rows.Close()
 	var out []json.RawMessage
+	size := 0
 	for rows.Next() {
 		var seq int64
 		var data []byte
@@ -111,7 +113,11 @@ func (q *Queue) Batch(n int) ([]json.RawMessage, error) {
 		if !bytes.Equal(data, []byte("{}")) {
 			ev = append(ev, ',')
 		}
-		out = append(out, append(ev, data[1:]...))
+		ev = append(ev, data[1:]...)
+		if size += len(ev) + 1; len(out) > 0 && size > maxBytes {
+			break
+		}
+		out = append(out, ev)
 		q.sent = max(q.sent, seq)
 	}
 	return out, rows.Err()
