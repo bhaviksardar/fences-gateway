@@ -23,6 +23,10 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 - `internal/mcp`: the MCP gateway. It serves one remote MCP server per upstream, at `/mcp/{upstream}`, over streamable HTTP. The agent is identified from its Fences token on every request, and may reach only the upstreams assigned to it. `tools/list` hides what isn't possible, and `tools/call` is decided before it's forwarded. A denied call gets an MCP error result carrying the reason. Upstream credentials stay in the gateway's config.
 - `internal/engine`: decisions for every surface. It covers quarantine commands that hold until a newer bundle, limit history reserved before forwarding, approvals held up to `approval_timeout_s` and decided again once granted, `on_unavailable` when the platform can't be asked, and a decision event for every request. Unauthenticated events are capped at 10 a second. It also keeps the metrics for health.
 - `internal/approvals`: approval requests, and answers delivered by command.
+- `cmd/fences-gateway`: the gateway process.
+  - It reads a JSON config, which rejects unknown keys, and header values can name environment variables (`${CRM_TOKEN}`).
+  - On first start it enrolls with `FENCES_ENROLL_TOKEN`, and `pinned_signing_keys` override the keys from enrollment.
+  - It keeps its identity, the last good bundle and the event queue in `data_dir`, runs sync and event shipping, and serves `/mcp/{upstream}`, `/healthz` and `/readyz` (`503` until there's a bundle). It shuts down cleanly on SIGTERM.
 
 ## v0.0.1 (specs only, no gateway code)
 

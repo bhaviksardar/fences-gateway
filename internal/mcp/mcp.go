@@ -162,10 +162,7 @@ func (g *Gateway) callTool(ctx context.Context, agent, upstream string, p *sdk.C
 		status = "error"
 	}
 	call.Done(upstream, status, time.Since(start))
-	if err != nil {
-		return nil, fmt.Errorf("upstream %s: %w", upstream, err)
-	}
-	return res, nil
+	return res, err
 }
 
 func (g *Gateway) forward(ctx context.Context, upstream string, p *sdk.CallToolParamsRaw) (*sdk.CallToolResult, error) {
@@ -176,10 +173,13 @@ func (g *Gateway) forward(ctx context.Context, upstream string, p *sdk.CallToolP
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
 	res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: p.Name, Arguments: p.Arguments})
-	if err != nil && ctx.Err() == nil {
-		g.drop(upstream, s) // the session may be broken: reconnect next time
+	if err != nil {
+		if ctx.Err() == nil {
+			g.drop(upstream, s) // the session may be broken: reconnect next time
+		}
+		return nil, fmt.Errorf("upstream %s: %w", upstream, err)
 	}
-	return res, err
+	return res, nil
 }
 
 // session is the gateway's own session to upstream, connected on first use with the upstream's credentials.
