@@ -14,7 +14,6 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -126,6 +125,8 @@ func (p *Policy) compile() error {
 	if p.Default != "" && p.Default != Allow && p.Default != Deny {
 		return fmt.Errorf("bad default %q", p.Default)
 	}
+	// Sorted by id, so the rules that match come out in the order Decide reports them (spec/rules, Deciding)
+	slices.SortFunc(p.Rules, func(a, b Rule) int { return strings.Compare(a.ID, b.ID) })
 	seen := map[string]bool{}
 	for i := range p.Rules {
 		r := &p.Rules[i]
@@ -296,7 +297,6 @@ func (p *Policy) Decide(req Request, history []Request, approved bool) Decision 
 			hits = append(hits, r)
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].ID < hits[j].ID })
 	out := func(decision string, r *Rule) Decision { return Decision{decision, r.ID, r.Reason} }
 
 	var passing []*Rule
@@ -444,10 +444,6 @@ func number(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
 		return n, true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
 	case string:
 		if decimal.MatchString(n) {
 			f, err := strconv.ParseFloat(n, 64)
