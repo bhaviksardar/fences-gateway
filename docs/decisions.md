@@ -13,16 +13,15 @@ Phase 0 decisions for Fences Gateway. Change one by editing this file in the sam
 - MCP handling uses `github.com/modelcontextprotocol/go-sdk`.
 - Module path: `github.com/bhaviksardar/fences-gateway`.
 
-## 2a. Where the gateway specs live
+## 2a. Where the specs live
 
-In this repo, not in `fences`. `fences` is the SDK repo, and none of the SDKs evaluate these rules.
-- [`docs/PROTOCOL-GATEWAY.md`](PROTOCOL-GATEWAY.md): gateway ↔ platform.
-- [`docs/RULES.md`](RULES.md): the rules.
-- [`conformance/cases/`](../conformance/cases): the conformance cases.
+In [`spec/`](../spec), versioned with this repo. Every change to them gets a `CHANGELOG.md` entry.
+- `PROTOCOL.md`: SDK ↔ server. It was moved here from `fences` with its history, and `fences` keeps a one-line link to it.
+- `PROTOCOL-GATEWAY.md`: gateway ↔ platform.
+- `rules/`: the rules spec and its JSON Schema.
+- `conformance/`: the conformance cases.
 
-`fences-edge` gets all of them along with `pkg/`. If an SDK ever enforces these rules locally, it copies the cases at a tagged version, the same way `fences-edge` takes `pkg/`.
-
-This differs from the roadmap, which put them in `fences`.
+`fences-edge` gets the spec matching the `pkg/` version it pins. The platform pins a tag for its contract tests. `fences` stays SDK-only.
 
 ## 3. Stability of `pkg/`
 

@@ -1,6 +1,6 @@
 """
-Reference rules engine for docs/RULES.md, and the conformance runner: `python conformance/engine.py` checks every case in
-conformance/cases/ against it. Stdlib only. pkg/policy (Go) must pass the same cases; this one keeps the cases honest
+Reference rules engine for spec/rules/README.md, and the conformance runner: `python conformance/reference.py` checks every case in
+spec/conformance/ against it. Stdlib only. pkg/policy (Go) must pass the same cases; this one keeps the cases honest
 while it's written, and shows the spec in ~150 lines.
 """
 import json
@@ -29,8 +29,10 @@ def validate(policy: dict) -> None:
         raise PolicyError(f"bad default {policy.get('default')!r}")
     seen = set()
     for r in policy.get("rules", []):
-        if not isinstance(r.get("id"), str) or not RULE_ID.fullmatch(r["id"]) or r["id"] in seen:
-            raise PolicyError(f"missing, malformed or duplicate id {r.get('id')!r}")
+        if not isinstance(r.get("id"), str) or not RULE_ID.fullmatch(r["id"]):
+            raise PolicyError(f"missing or malformed id {r.get('id')!r}")
+        if r["id"] in seen:
+            raise PolicyError(f"duplicate id {r['id']!r}")
         seen.add(r["id"])
         if r.get("on") not in SUBJECTS or r.get("effect") not in EFFECTS:
             raise PolicyError(f"{r['id']}: bad on or effect")
@@ -59,7 +61,7 @@ def number(v):
 
 
 def glob(pattern: str, s: str) -> bool:
-    # Not fnmatch: no [...] classes and no case folding, so every engine agrees (RULES.md, Conditions)
+    # Not fnmatch: no [...] classes and no case folding, so every engine agrees (spec/rules, Conditions)
     rx = "".join(".*" if ch == "*" else "." if ch == "?" else re.escape(ch) for ch in pattern)
     return re.fullmatch(rx, s, re.DOTALL) is not None
 
@@ -134,18 +136,69 @@ def decide(policy: dict, request: dict, history: list = (), approved: bool = Fal
     return {"decision": policy.get("default", "deny"), "rule": None, "reason": None}
 
 
+def run_breach(run: dict, limits: dict):
+    """spec/rules, Run limits: the checkpoint check."""
+    if limits["budget_usd"] is not None and round(run["spent_usd"], 9) > limits["budget_usd"]:
+        return "budget_exceeded"
+    if run["iterations"] > limits["max_iterations"]:
+        return "iteration_limit"
+    if run["duration_ms"] > limits["max_duration_ms"]:
+        return "time_limit"
+    if limits["max_tokens"] > 0 and run["tokens_used"] > limits["max_tokens"]:
+        return "token_limit"
+    return None
+
+
+def guard(run: dict, limits: dict, amount: float) -> str:
+    """spec/rules, Run limits: 'allow' (and reserves the amount in `run`) or the breach that refuses it."""
+    if run.get("stopped"):
+        return "stopped_by_user"
+    breach = run.get("breach") or run_breach(run, limits)
+    if breach:
+        return breach
+    if limits["budget_usd"] is not None and round(run["spent_usd"] + run["reserved_usd"] + amount, 9) > limits["budget_usd"]:
+        return "budget_exceeded"
+    run["reserved_usd"] += amount
+    return "allow"
+
+
+def check_run_case(suite: dict, case: dict) -> dict:
+    limits, state = case.get("limits", suite.get("limits")), dict(case["run"])
+    if case["check"] == "checkpoint":
+        return {"breach": run_breach(state, limits)}
+    return {"results": [guard(state, limits, a) for a in case["amounts"]]}
+
+
+def schema_errors(policy: dict) -> list:
+    """Schema problems with a policy; None if jsonschema isn't installed (CI installs it)."""
+    try:
+        import jsonschema
+    except ImportError:
+        return None
+    schema = json.loads((Path(__file__).parent.parent / "spec" / "rules" / "schema.json").read_text(encoding="utf-8"))
+    return [e.message for e in jsonschema.Draft202012Validator(schema).iter_errors(policy)]
+
+
 def run(cases_dir: Path) -> int:
     failed = total = 0
     for f in sorted(cases_dir.glob("*.json")):
         suite = json.loads(f.read_text(encoding="utf-8"))
         for case in suite["cases"]:
             total += 1
-            policy = case.get("policy", suite.get("policy"))
             want = case["expect"]
-            try:
-                got = decide(policy, case["request"], case.get("history", []), case.get("approved", False))
-            except PolicyError as e:
-                got = {"error": "invalid_policy", "detail": str(e)}
+            if suite.get("kind") == "run":
+                got = check_run_case(suite, case)
+            else:
+                policy = case.get("policy", suite.get("policy"))
+                try:
+                    got = decide(policy, case["request"], case.get("history", []), case.get("approved", False))
+                except PolicyError as e:
+                    got = {"error": "invalid_policy", "detail": str(e)}
+                # The schema must agree with the engine: a valid policy passes it, an invalid one fails it, except a
+                # duplicate id, which JSON Schema can't express
+                errs = schema_errors(policy)
+                if errs is not None and bool(errs) != ("error" in got and not got["detail"].startswith("duplicate")):
+                    got, want = {**got, "schema": errs}, {**want, "schema": "agrees with the engine"}
             if any(got.get(k) != v for k, v in want.items()):
                 failed += 1
                 print(f"FAIL {f.name}: {case['name']}\n  want {want}\n  got  {got}")
@@ -154,4 +207,4 @@ def run(cases_dir: Path) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run(Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "cases"))
+    sys.exit(run(Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent.parent / "spec" / "conformance"))

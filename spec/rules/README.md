@@ -1,6 +1,6 @@
 # Fences rules
 
-How a policy decides whether an agent's request goes ahead. Fences Gateway (MCP, HTTP, Kubernetes) and Fences Edge enforce rules from this file, using the policy in a signed bundle ([PROTOCOL-GATEWAY.md](PROTOCOL-GATEWAY.md)). Every engine (the Go one in `pkg/policy`, and the reference one in [`conformance/engine.py`](../conformance/engine.py)) must pass the cases in [`conformance/cases/`](../conformance/cases). When an engine and this file disagree, fix the engine or change this file first, and add a case.
+How a policy decides whether an agent's request goes ahead. Fences Gateway (MCP, HTTP, Kubernetes) and Fences Edge enforce rules from this file, using the policy in a signed bundle ([PROTOCOL-GATEWAY.md](../PROTOCOL-GATEWAY.md)). Every engine (the Go one in `pkg/policy`, and the reference one in [`conformance/reference.py`](../../conformance/reference.py)) must pass the cases in [`spec/conformance/`](../conformance). When an engine and this file disagree, fix the engine or change this file first, and add a case.
 
 Conditions use the same shape as the dashboard's incident rules (`where: [{field, op, value}]`), so a team writes both kinds the same way.
 
@@ -111,6 +111,26 @@ Given a policy, a request, the history, and whether this request has a granted a
 7. Otherwise → `default` (`deny` when absent).
 
 The result is `{decision, rule, reason}`. `rule` is the `id` of the rule that decided it. When several rules decide at the same step, `rule` is the one whose `id` sorts first, so all engines report the same one. `rule` is null at steps 1 and 7.
+
+## Run limits
+
+The limits on a governed run (budget, steps, time, tokens), as the SDKs and the platform enforce them ([PROTOCOL.md](../PROTOCOL.md)). They aren't policy rules, but every engine that enforces them must agree, so they have conformance cases too ([`run.json`](../conformance/run.json)). The gateway doesn't enforce them.
+
+A run has `spent_usd`, `iterations`, `duration_ms` and `tokens_used`, and limits `budget_usd` (null: no budget), `max_iterations`, `max_duration_ms` and `max_tokens` (0: no limit).
+
+**Checkpoint.** A limit trips once it's **exceeded**, not when it's reached. When several trip at once, the first in this order is reported:
+1. `budget_exceeded`: `round(spent_usd, 9) > budget_usd`
+2. `iteration_limit`: `iterations > max_iterations`
+3. `time_limit`: `duration_ms > max_duration_ms`
+4. `token_limit`: `max_tokens > 0` and `tokens_used > max_tokens`
+
+Spend is rounded to 9 decimal places (as Python's `round(x, 9)`) before comparing, so float drift doesn't trip a budget: five $0.02 calls fit a $0.10 budget.
+
+**Guard** (a guarded tool asking to run with `amount_usd`), in this order:
+1. The run was stopped → `stopped_by_user`.
+2. The run already has a breach, or a checkpoint would find one → that breach.
+3. `budget_usd` is set and `round(spent_usd + reserved_usd + amount_usd, 9) > budget_usd` → `budget_exceeded`.
+4. Otherwise allowed, and `amount_usd` is added to `reserved_usd` before the next check, so parallel calls can't overspend together.
 
 ## Changes to this file
 

@@ -2,9 +2,9 @@
 
 What a Fences Gateway (or a Fences Edge device) sends to the Fences platform, and what it expects back. The gateway in this repo and the platform in `fences-platform` both implement this file. When they disagree, fix one of them, or change this file first.
 
-The gateway decides every request locally, from a signed policy bundle it pulls from the platform ([RULES.md](RULES.md)). The platform is never on the hot path. It issues bundles, receives decision events, answers approvals and sends quarantines.
+The gateway decides every request locally, from a signed policy bundle it pulls from the platform ([rules/README.md](rules/README.md)). The platform is never on the hot path. It issues bundles, receives decision events, answers approvals and sends quarantines.
 
-The SDK's protocol is a separate file, [PROTOCOL.md](https://github.com/bhaviksardar/fences/blob/main/PROTOCOL.md). This one reuses its ideas (commands with `id`s, acknowledgements, approvals), adapted to a long-lived process that serves many agents.
+The SDK's protocol is a separate file, [PROTOCOL.md](PROTOCOL.md). This one reuses its ideas (commands with `id`s, acknowledgements, approvals), adapted to a long-lived process that serves many agents.
 
 ---
 
@@ -41,7 +41,7 @@ Sent once, at first start. The gateway creates an Ed25519 key pair and keeps the
 {"gateway_id": "gw_8f2c...", "signing_keys": [{"key_id": "k1", "public_key": "<base64>"}], "sync_interval_s": 15}
 ```
 
-`signing_keys` are the platform's public keys for verifying bundles. A gateway configured with `pinned_signing_keys` uses only those and ignores the list here, so a platform that swaps keys can't push a bundle (threat model, decisions.md).
+`signing_keys` are the platform's public keys for verifying bundles. A gateway configured with `pinned_signing_keys` uses only those and ignores the list here, so a platform that swaps keys can't push a bundle (threat model, [decisions.md](../docs/decisions.md)).
 
 A used, expired or unknown token gets `401`.
 
@@ -103,7 +103,7 @@ The gateway verifies the exact bytes it received, then parses them. It never re-
 | `version` | Increases by at least 1 with every new bundle for this gateway. |
 | `agents` | Every agent this gateway serves, and how to recognize it. A **token** is one Fences issued, sent by an MCP client as `Authorization: Bearer`. A **header** is an API key the vendor sends in a named header. Only SHA-256 hashes are in the bundle, never the secrets. |
 | `upstreams` | The upstream MCP servers (names from the gateway's config) the agent may reach. Upstream credentials stay in the gateway's config and are never in a bundle. |
-| `policy` | A policy, per [RULES.md](RULES.md). |
+| `policy` | A policy, per [rules/README.md](rules/README.md). |
 | `approval_timeout_s` | How long a call waits for an approval before it's denied. |
 
 **Accepting a bundle.** The gateway accepts a bundle only if all of these hold:
@@ -111,7 +111,7 @@ The gateway verifies the exact bytes it received, then parses them. It never re-
 - the signature verifies
 - `gateway_id` is its own
 - `version` is greater than the version it has
-- the policy is valid per RULES.md
+- the policy is valid per the [rules spec](rules/README.md) and [schema](rules/schema.json)
 
 Otherwise it keeps the bundle it has and reports why in `health.bundle_error`. An older version is always refused, so a replayed bundle can't roll the policy back.
 
@@ -138,7 +138,7 @@ One event for every request the gateway decides. Events go into a local SQLite q
 | `seq` | Per gateway: starts at 1, increases by 1, is stored on disk and never reused. |
 | `on`, `target` | `mcp`: `server/tool`. `http`: `METHOD /path`. `k8s`: `verb kind namespace/name`. |
 | `arguments` | Argument (or body field) **names only**, by default. With `report_argument_values: true` in the gateway's config, it's an object of the values instead, each clipped to 300 characters. |
-| `decision`, `rule`, `reason` | From RULES.md, plus `unauthenticated` (unknown credential). |
+| `decision`, `rule`, `reason` | From the rules spec, plus `unauthenticated` (unknown credential). |
 | `degraded` | `true` if the fail mode decided this, not the policy (see Fail mode). |
 | `latency_ms` | Time the gateway added: policy, queue and bookkeeping. It doesn't include the upstream. |
 | `upstream_status` | `ok` or `error` for MCP, the status code for HTTP, `null` for k8s or when the call wasn't forwarded. |
@@ -163,7 +163,7 @@ Sent when the policy says `require_approval`.
 
 - `approval_id`: a UUID the gateway chooses. A repeat is the same request.
 - `summary`: the full request, with values, so the person approving sees what they're approving. Values are clipped, control characters escaped, and the whole summary is at most 2,000 characters, as in PROTOCOL.md.
-- `request_hash`: SHA-256 of the request as RULES.md describes it, minus `at`, serialized as JSON with sorted keys and no whitespace. An approval applies only to a request with this hash.
+- `request_hash`: SHA-256 of the request as the rules spec describes it, minus `at`, serialized as JSON with sorted keys and no whitespace. An approval applies only to a request with this hash.
 
 **Response:** `{"ok": true}` once the request is stored and someone has been notified (Slack, PagerDuty, dashboard).
 
@@ -205,7 +205,7 @@ Commands arrive in sync responses and are applied in the order listed. Unknown t
 
 ## Fail mode
 
-The gateway keeps deciding from its last good bundle when the platform is unreachable, so most requests never notice. The fail mode applies only when the policy can't decide on its own (decisions.md, section 4):
+The gateway keeps deciding from its last good bundle when the platform is unreachable, so most requests never notice. The fail mode applies only when the policy can't decide on its own ([decisions.md](../docs/decisions.md), section 4):
 
 | Situation | The gateway |
 |---|---|
