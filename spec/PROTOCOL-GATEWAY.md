@@ -137,13 +137,13 @@ One event for every request the gateway decides. Events go into a local SQLite q
 |---|---|
 | `seq` | Per gateway: starts at 1, increases by 1, is stored on disk and never reused. |
 | `on`, `target` | `mcp`: `server/tool`. `http`: `METHOD /path`. `k8s`: `verb kind namespace/name`. |
-| `arguments` | Argument (or body field) **names only**, by default. With `report_argument_values: true` in the gateway's config, it's an object of the values instead, each clipped to 300 characters. |
+| `arguments` | Argument (or body field) **names only**, by default. With `report_argument_values: true` in the gateway's config, it's an object of the values instead. Names and values are each clipped to 300 characters. |
 | `decision`, `rule`, `reason` | From the rules spec, plus `unauthenticated` (unknown credential). |
 | `degraded` | `true` if the fail mode decided this, not the policy (see Fail mode). |
 | `latency_ms` | Time the gateway added: policy, queue and bookkeeping. It doesn't include the upstream. |
 | `upstream_status` | `ok` or `error` for MCP, the status code for HTTP, `null` for k8s or when the call wasn't forwarded. |
 
-**Response:** `{"acked_seq": 1048}`, the highest `seq` up to which the platform has stored every event. The gateway deletes events up to it and sends the rest again. Delivery is **at least once**, and the platform stores each `(gateway_id, seq)` once.
+**Response:** `{"acked_seq": 1048}`, the highest `seq` up to which the platform has stored every event. The gateway deletes events up to it and sends the rest again. An `acked_seq` above the highest `seq` the gateway has sent is taken as that `seq`, so a wrong answer can't delete events that were never sent. Delivery is **at least once**, and the platform stores each `(gateway_id, seq)` once.
 
 If the platform is unreachable for a long time, the queue keeps up to 100,000 events (configurable). Past that it drops the oldest and counts them in `health.dropped_events`. It never blocks requests because the queue is full.
 

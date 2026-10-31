@@ -62,15 +62,20 @@ func Target(req policy.Request) string {
 }
 
 // Arguments is what an event says about a request's arguments (an MCP call's args, an HTTP request's body fields):
-// their sorted names by default, or with values, each value clipped to 300 characters.
+// their sorted names by default, or with values. Names and values are each clipped to 300 characters: the agent
+// chooses both.
 func Arguments(req policy.Request, values bool) any {
 	args := arguments(req)
 	if !values {
-		return append([]string{}, slices.Sorted(maps.Keys(args))...) // [] rather than null for no arguments
+		names := []string{} // [] rather than null for no arguments
+		for _, k := range slices.Sorted(maps.Keys(args)) {
+			names = append(names, cut(k, maxValue))
+		}
+		return names
 	}
 	out := make(map[string]string, len(args))
 	for k, v := range args {
-		out[k] = cut(text(v), maxValue)
+		out[cut(k, maxValue)] = cut(text(v), maxValue)
 	}
 	return out
 }

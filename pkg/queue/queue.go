@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 
@@ -27,6 +28,7 @@ type Queue struct {
 	mu      sync.Mutex
 	depth   int
 	dropped int64
+	sent    int64 // the highest seq Batch has returned
 }
 
 // Open opens or creates the queue at path. max is how many events it keeps (DefaultMax if 0 or less).
@@ -34,6 +36,12 @@ func Open(path string, max int) (*Queue, error) {
 	if max <= 0 {
 		max = DefaultMax
 	}
+	// Created 0600 first: events can hold argument values. SQLite gives its -wal and -shm files the same mode.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("queue: %w", err)
+	}
+	f.Close()
 	// ponytail: synchronous=NORMAL survives a crash of the process, but a power cut can lose the last few events and
 	// let their seqs be reused (the platform would take them as repeats); FULL if that matters more than latency
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)")
@@ -104,14 +112,17 @@ func (q *Queue) Batch(n int) ([]json.RawMessage, error) {
 			ev = append(ev, ',')
 		}
 		out = append(out, append(ev, data[1:]...))
+		q.sent = max(q.sent, seq)
 	}
 	return out, rows.Err()
 }
 
-// Ack deletes every event up to and including seq: the platform's acked_seq.
+// Ack deletes every event up to and including seq: the platform's acked_seq. An acked_seq above the highest seq sent
+// is taken as that seq, so a wrong answer can't delete events the platform never got.
 func (q *Queue) Ack(seq int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	seq = min(seq, q.sent)
 	res, err := q.db.Exec(`DELETE FROM events WHERE seq <= ?`, seq)
 	if err != nil {
 		return fmt.Errorf("queue: %w", err)

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -32,12 +33,22 @@ func TestQueue(t *testing.T) {
 		t.Fatalf("batch: %s", batch)
 	}
 
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Errorf("queue file mode %v, want 0600", info.Mode().Perm())
+	}
+	q.Push(struct{}{}) // seq 5, never sent: an ack past what was sent can't delete it
+	q.Ack(99)
+	if q.Depth() != 1 {
+		t.Fatalf("ack past the batch deleted unsent events: depth %d", q.Depth())
+	}
+
 	// Acked events go, and their seqs are never given out again, even after a restart
-	q.Ack(4)
+	q.Batch(10)
+	q.Ack(5)
 	q.Close()
 	q, _ = Open(path, 5)
-	if seq, _ := q.Push(struct{}{}); seq != 5 || q.Depth() != 1 {
-		t.Fatalf("after ack and restart: seq %d, depth %d; want 5, 1", seq, q.Depth())
+	if seq, _ := q.Push(struct{}{}); seq != 6 || q.Depth() != 1 {
+		t.Fatalf("after ack and restart: seq %d, depth %d; want 6, 1", seq, q.Depth())
 	}
 
 	// Over the max, the oldest are dropped and counted; pushing never fails because the queue is full
@@ -48,7 +59,7 @@ func TestQueue(t *testing.T) {
 	}
 	batch, _ = q.Batch(10)
 	json.Unmarshal(batch[0], &first)
-	if q.Depth() != 5 || q.Dropped() != 3 || len(batch) != 5 || first["seq"] != 8.0 {
+	if q.Depth() != 5 || q.Dropped() != 3 || len(batch) != 5 || first["seq"] != 9.0 {
 		t.Fatalf("depth %d, dropped %d, oldest %v", q.Depth(), q.Dropped(), first["seq"])
 	}
 

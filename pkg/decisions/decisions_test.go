@@ -36,6 +36,9 @@ func TestDecisions(t *testing.T) {
 	}
 
 	long := req(t, `{"on":"mcp","server":"s","tool":"t","args":{"a":"`+strings.Repeat("x", 5000)+`","b":"​hidden","z":"last"}}`)
+	if n := Arguments(req(t, `{"on":"mcp","args":{"`+strings.Repeat("k", 5000)+`":1}}`), false).([]string)[0]; len(n) > 302 {
+		t.Errorf("name not clipped: %d bytes", len(n))
+	}
 	if v := Arguments(long, true).(map[string]string)["a"]; len([]rune(v)) != 300 || !strings.HasSuffix(v, "…") {
 		t.Errorf("value not clipped to 300: %d", len([]rune(v)))
 	}
