@@ -2,6 +2,10 @@
 
 Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fences-edge` imports `pkg/` and follows `spec/`, and `fences-platform` checks against `spec/`. Entries that affect `fences-edge` are marked **(edge)**.
 
+## Unreleased
+
+- `pkg/policy`: the rules engine in Go **(edge)**. `Parse` rejects what `spec/rules/schema.json` rejects (apart from repeats in `quarantined` and `days`, which change nothing), plus duplicate ids, and data after the policy. `Decide` follows `spec/rules/README.md`, Deciding. It passes every policy case in `spec/conformance/`, which `conformance/conformance_test.go` checks in CI. Run limits aren't in it: the gateway doesn't enforce them.
+
 ## v0.0.1 (specs only, no gateway code)
 
 - `spec/PROTOCOL.md`: the SDK ↔ server protocol, moved from `fences` with its history, unchanged.
