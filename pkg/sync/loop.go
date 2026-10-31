@@ -49,6 +49,7 @@ type Ack struct {
 	Extra      map[string]any
 }
 
+// MarshalJSON writes the ack as the platform expects it: id, type, received_at and the Extra fields, flat.
 func (a Ack) MarshalJSON() ([]byte, error) {
 	m := map[string]any{"id": a.ID, "type": a.Type}
 	if a.ReceivedAt != 0 {

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
+data:
+  config.json: |
+    {{- $cfg := deepCopy .Values.config }}
+    {{- $_ := set $cfg "data_dir" "/var/lib/fences-gateway" }}
+    {{- $_ := set $cfg "listen" ":8080" }}
+    {{- if not $cfg.name }}{{ $_ := set $cfg "name" .Release.Name }}{{ end }}
+    {{ toJson $cfg }}

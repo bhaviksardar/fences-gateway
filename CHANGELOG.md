@@ -28,6 +28,13 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
   - It reads a JSON config, which rejects unknown keys, and header values can name environment variables, written `${CRM_TOKEN}`. Only that form is expanded, so a secret can contain a bare `$`.
   - On first start it enrolls with `FENCES_ENROLL_TOKEN`, and `pinned_signing_keys` override the keys from enrollment.
   - It keeps its identity, the last good bundle and the event queue in `data_dir`, runs sync and event shipping, and serves `/mcp/{upstream}`, `/healthz` and `/readyz` (`503` until there's a bundle). It shuts down cleanly on SIGTERM.
+- `Dockerfile`: a multi-arch image (amd64 and arm64) on distroless, running as a non-root user, about 15 MB. `release.yml` builds and pushes it to GHCR on a `v*` tag, with the image tagged without the `v`.
+- `deploy/helm/fences-gateway`: a chart.
+  - It runs a StatefulSet, so the identity, bundle and queue survive restarts on a volume. It has one replica, because each replica is its own enrolled gateway until Phase 7.
+  - The enrollment token and upstream secrets come from Secrets.
+  - The pod runs on a read-only root filesystem with no capabilities, and `/readyz` is its readiness probe.
+  - CI lints the chart.
+- `pkg/sync` has an example program for `fences-edge` to copy, compiled with the tests. Every exported name in `pkg/` has a doc comment.
 
 ## v0.0.1 (specs only, no gateway code)
 

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: fences-gateway
+description: Fences Gateway governs agents where they reach tools (MCP servers today).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,36 @@
+image:
+  repository: ghcr.io/bhaviksardar/fences-gateway
+  tag: ""  # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+# Becomes config.json (see cmd/fences-gateway). data_dir and listen are set by the chart.
+config:
+  platform: https://fences.example.com
+  name: ""  # defaults to the release name
+  upstreams: {}
+  #  crm:
+  #    url: http://crm-mcp.tools.svc:8000/mcp
+  #    headers:
+  #      Authorization: "Bearer ${CRM_TOKEN}"  # from envFromSecret
+  report_argument_values: false
+  # pinned_signing_keys: {k1: "<base64>"}
+
+# The one-time enrollment token, used on first start only. The identity it produces is kept on the volume.
+enrollToken:
+  secretName: ""
+  key: token
+
+# A Secret whose keys become environment variables, for ${NAME} in upstream headers.
+envFromSecret: ""
+
+# ponytail: one replica; each replica is its own enrolled gateway, so more need Phase 7's shared rate windows
+storage:
+  size: 1Gi
+  storageClassName: ""
+
+service:
+  port: 8080
+
+resources:
+  requests: {cpu: 100m, memory: 64Mi}
+  limits: {memory: 256Mi}
