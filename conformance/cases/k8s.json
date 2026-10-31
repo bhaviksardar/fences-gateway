@@ -1,0 +1,66 @@
+{
+  "about": "Kubernetes admission requests: verb, kind, namespace, name patterns, per-namespace rate limits (RULES.md, subject k8s). The policy is the roadmap's AI SRE example.",
+  "policy": {
+    "rules": [
+      {"id": "reads", "on": "k8s", "effect": "allow", "where": [{"field": "verb", "op": "in", "value": ["get", "list", "watch"]}]},
+      {"id": "restart-pods", "on": "k8s", "effect": "allow", "where": [{"field": "verb", "op": "is", "value": "delete"}, {"field": "kind", "op": "is", "value": "Pod"}],
+       "limit": {"window_s": 600, "max": 3, "per": ["namespace"]}, "reason": "At most 3 pod restarts per namespace every 10 minutes"},
+      {"id": "rotate-creds", "on": "k8s", "effect": "approve", "where": [{"field": "kind", "op": "is", "value": "Secret"}, {"field": "verb", "op": "in", "value": ["update", "patch"]},
+       {"field": "name", "op": "matches", "value": "*-credentials"}], "reason": "Credential rotation needs approval"},
+      {"id": "no-kube-system", "on": "k8s", "effect": "deny", "where": [{"field": "namespace", "op": "is", "value": "kube-system"},
+       {"field": "verb", "op": "in", "value": ["create", "update", "patch", "delete"]}]}
+    ]
+  },
+  "cases": [
+    {"name": "list pods",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "list", "group": "", "kind": "Pod", "namespace": "shop", "name": ""},
+     "expect": {"decision": "allow", "rule": "reads"}},
+    {"name": "first pod restart",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "expect": {"decision": "allow", "rule": "restart-pods"}},
+    {"name": "third restart in the namespace in 10 minutes is allowed",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "history": [
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609500, "verb": "delete", "kind": "Pod", "namespace": "shop", "name": "web-1"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609700, "verb": "delete", "kind": "Pod", "namespace": "shop", "name": "web-2"}],
+     "expect": {"decision": "allow", "rule": "restart-pods"}},
+    {"name": "fourth restart in the namespace in 10 minutes is denied",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "history": [
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609500, "verb": "delete", "kind": "Pod", "namespace": "shop", "name": "web-1"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609700, "verb": "delete", "kind": "Pod", "namespace": "shop", "name": "web-2"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609900, "verb": "delete", "kind": "Pod", "namespace": "shop", "name": "web-3"}],
+     "expect": {"decision": "rate_limited", "rule": "restart-pods", "reason": "At most 3 pod restarts per namespace every 10 minutes"}},
+    {"name": "restarts in other namespaces don't count",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "history": [
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609500, "verb": "delete", "kind": "Pod", "namespace": "search", "name": "a"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609700, "verb": "delete", "kind": "Pod", "namespace": "search", "name": "b"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609900, "verb": "delete", "kind": "Pod", "namespace": "search", "name": "c"}],
+     "expect": {"decision": "allow", "rule": "restart-pods"}},
+    {"name": "reads don't count toward the restart limit",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "history": [
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609500, "verb": "get", "kind": "Pod", "namespace": "shop", "name": "a"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609700, "verb": "get", "kind": "Pod", "namespace": "shop", "name": "b"},
+       {"agent": "sre-bot", "on": "k8s", "at": 1793609900, "verb": "get", "kind": "Pod", "namespace": "shop", "name": "c"}],
+     "expect": {"decision": "allow", "rule": "restart-pods"}},
+    {"name": "deleting a deployment: no rule, default deny",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "apps", "kind": "Deployment", "namespace": "shop", "name": "web"},
+     "expect": {"decision": "deny", "rule": null}},
+    {"name": "credential rotation waits for approval",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "patch", "group": "", "kind": "Secret", "namespace": "shop", "name": "db-credentials"},
+     "expect": {"decision": "require_approval", "rule": "rotate-creds", "reason": "Credential rotation needs approval"}},
+    {"name": "credential rotation, approved",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "patch", "group": "", "kind": "Secret", "namespace": "shop", "name": "db-credentials"},
+     "approved": true,
+     "expect": {"decision": "allow", "rule": "rotate-creds"}},
+    {"name": "writes in kube-system are denied, even a pod restart",
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "kube-system", "name": "coredns-1"},
+     "expect": {"decision": "deny", "rule": "no-kube-system"}},
+    {"name": "quarantine leaves nothing allowed (the gateway keeps reads via the cluster's RBAC, not the policy)",
+     "policy": {"quarantined": ["sre-bot"], "rules": [{"id": "reads", "on": "k8s", "effect": "allow"}]},
+     "request": {"agent": "sre-bot", "on": "k8s", "at": 1793610000, "verb": "delete", "group": "", "kind": "Pod", "namespace": "shop", "name": "web-7c9"},
+     "expect": {"decision": "deny", "rule": null}}
+  ]
+}

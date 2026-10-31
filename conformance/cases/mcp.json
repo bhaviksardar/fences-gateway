@@ -1,0 +1,79 @@
+{
+  "about": "MCP tool calls: server, tool, argument matchers, a rate limit and an approval (RULES.md, subject mcp).",
+  "policy": {
+    "rules": [
+      {"id": "crm-reads", "on": "mcp", "effect": "allow", "where": [{"field": "server", "op": "is", "value": "crm"}, {"field": "tool", "op": "matches", "value": "get_*"}]},
+      {"id": "no-delete", "on": "mcp", "effect": "deny", "where": [{"field": "tool", "op": "matches", "value": "delete_*"}], "reason": "Agents can't delete records"},
+      {"id": "email", "on": "mcp", "effect": "allow", "where": [{"field": "server", "op": "is", "value": "mail"}, {"field": "tool", "op": "is", "value": "send_email"}],
+       "limit": {"window_s": 3600, "max": 3}},
+      {"id": "external-email", "on": "mcp", "effect": "approve", "where": [{"field": "tool", "op": "is", "value": "send_email"}, {"field": "args.to", "op": "matches", "value": "*@*"},
+       {"field": "args.to", "op": "not_contains", "value": "@example.com"}], "reason": "Email outside the company needs a person's OK"}
+    ]
+  },
+  "cases": [
+    {"name": "allowed read tool",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "crm", "tool": "get_ticket", "args": {"id": "T-1"}},
+     "expect": {"decision": "allow", "rule": "crm-reads"}},
+    {"name": "same tool name on another server isn't allowed",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "billing", "tool": "get_ticket"},
+     "expect": {"decision": "deny", "rule": null}},
+    {"name": "denied tool, with its reason",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "crm", "tool": "delete_ticket", "args": {"id": "T-1"}},
+     "expect": {"decision": "deny", "rule": "no-delete", "reason": "Agents can't delete records"}},
+    {"name": "unknown tool: default deny",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "crm", "tool": "update_ticket"},
+     "expect": {"decision": "deny", "rule": null}},
+    {"name": "rate limit: third call in the hour is allowed",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "a@example.com"}},
+     "history": [
+       {"agent": "support-bot", "on": "mcp", "at": 1793607000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793608000, "server": "mail", "tool": "send_email"}],
+     "expect": {"decision": "allow", "rule": "email"}},
+    {"name": "rate limit: fourth call in the hour is blocked",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "a@example.com"}},
+     "history": [
+       {"agent": "support-bot", "on": "mcp", "at": 1793607000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793608000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793609000, "server": "mail", "tool": "send_email"}],
+     "expect": {"decision": "rate_limited", "rule": "email"}},
+    {"name": "rate limit: a call exactly window_s ago has left the window",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "a@example.com"}},
+     "history": [
+       {"agent": "support-bot", "on": "mcp", "at": 1793606400, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793608000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793609000, "server": "mail", "tool": "send_email"}],
+     "expect": {"decision": "allow", "rule": "email"}},
+    {"name": "rate limit: another agent's calls don't count",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "a@example.com"}},
+     "history": [
+       {"agent": "sales-bot", "on": "mcp", "at": 1793607000, "server": "mail", "tool": "send_email"},
+       {"agent": "sales-bot", "on": "mcp", "at": 1793608000, "server": "mail", "tool": "send_email"},
+       {"agent": "sales-bot", "on": "mcp", "at": 1793609000, "server": "mail", "tool": "send_email"}],
+     "expect": {"decision": "allow", "rule": "email"}},
+    {"name": "rate limit: calls to other tools don't count",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "a@example.com"}},
+     "history": [
+       {"agent": "support-bot", "on": "mcp", "at": 1793607000, "server": "crm", "tool": "get_ticket"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793608000, "server": "crm", "tool": "get_ticket"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793609000, "server": "crm", "tool": "get_ticket"}],
+     "expect": {"decision": "allow", "rule": "email"}},
+    {"name": "external email needs approval",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "someone@gmail.com"}},
+     "expect": {"decision": "require_approval", "rule": "external-email", "reason": "Email outside the company needs a person's OK"}},
+    {"name": "external email, approved: allow",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "someone@gmail.com"}},
+     "approved": true,
+     "expect": {"decision": "allow", "rule": "email"}},
+    {"name": "external email over the rate limit: rate limited even though approval would be asked",
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "mail", "tool": "send_email", "args": {"to": "someone@gmail.com"}},
+     "history": [
+       {"agent": "support-bot", "on": "mcp", "at": 1793607000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793608000, "server": "mail", "tool": "send_email"},
+       {"agent": "support-bot", "on": "mcp", "at": 1793609000, "server": "mail", "tool": "send_email"}],
+     "expect": {"decision": "rate_limited", "rule": "email"}},
+    {"name": "quarantine cuts the agent off from every tool",
+     "policy": {"quarantined": ["support-bot"], "rules": [{"id": "crm-reads", "on": "mcp", "effect": "allow"}]},
+     "request": {"agent": "support-bot", "on": "mcp", "at": 1793610000, "server": "crm", "tool": "get_ticket"},
+     "expect": {"decision": "deny", "rule": null}}
+  ]
+}
