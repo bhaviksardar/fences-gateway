@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"regexp"
@@ -28,7 +29,8 @@ const (
 	RateLimited     = "rate_limited"
 )
 
-// Policy is a parsed, validated policy. Build one with Parse; Decide relies on what Parse checks and compiles.
+// Policy is a parsed, validated policy. Build one with Parse: Decide relies on what Parse checks and compiles, and
+// panics on a Policy built any other way. A parsed Policy is safe for concurrent use.
 type Policy struct {
 	Default     string   `json:"default,omitempty"`
 	Quarantined []string `json:"quarantined,omitempty"`
@@ -73,7 +75,7 @@ type Window struct {
 
 // Limit is a rule's rate or amount cap.
 type Limit struct {
-	WindowS int64    `json:"window_s"`
+	WindowS float64  `json:"window_s"` // a whole number of seconds
 	Max     *float64 `json:"max"`
 	Sum     string   `json:"sum,omitempty"`
 	Per     []string `json:"per,omitempty"`
@@ -102,13 +104,17 @@ type missingValue struct{}
 
 var missing = missingValue{}
 
-// Parse reads a policy and rejects anything spec/rules/schema.json rejects, plus duplicate rule ids. It never guesses.
+// Parse reads a policy and rejects what spec/rules/schema.json rejects (apart from repeats in quarantined and days,
+// which change nothing), plus duplicate rule ids. It never guesses.
 func Parse(data []byte) (*Policy, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var p Policy
 	if err := dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("policy: %w", err)
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return nil, fmt.Errorf("policy: data after the policy")
 	}
 	if err := p.compile(); err != nil {
 		return nil, fmt.Errorf("policy: %w", err)
@@ -165,7 +171,7 @@ func (r *Rule) compile() error {
 		}
 	}
 	if l := r.Limit; l != nil {
-		if l.WindowS < 1 || l.Max == nil || *l.Max < 0 {
+		if l.WindowS < 1 || l.WindowS != math.Trunc(l.WindowS) || l.Max == nil || *l.Max < 0 {
 			return fmt.Errorf("limit needs window_s ≥ 1 and max ≥ 0")
 		}
 		for _, f := range append([]string{l.Sum}, l.Per...) {
@@ -195,7 +201,7 @@ func (c *Condition) compile() error {
 	case "is", "is_not", "contains", "not_contains", "matches":
 		err = json.Unmarshal(c.Value, &c.text)
 		if c.Op == "matches" && err == nil {
-			c.glob = compileGlob(c.text)
+			c.glob, err = compileGlob(c.text)
 		}
 	case "in":
 		err = json.Unmarshal(c.Value, &c.list)
@@ -212,7 +218,7 @@ func (c *Condition) compile() error {
 
 // compileGlob: * is any run (newlines too), ? is one character, everything else is literal. Not path.Match: no [...]
 // classes, and * crosses slashes, so every engine agrees.
-func compileGlob(pattern string) *regexp.Regexp {
+func compileGlob(pattern string) (*regexp.Regexp, error) {
 	var b strings.Builder
 	b.WriteString(`(?s)^`)
 	for _, ch := range pattern {
@@ -226,7 +232,7 @@ func compileGlob(pattern string) *regexp.Regexp {
 		}
 	}
 	b.WriteString(`$`)
-	return regexp.MustCompile(b.String())
+	return regexp.Compile(b.String())
 }
 
 func (w *Window) compile() error {
@@ -396,7 +402,7 @@ func (r *Rule) overLimit(req Request, history []Request) bool {
 		hAt, ok := number(h["at"])
 		hAgent, _ := h["agent"].(string)
 		hOn, _ := h["on"].(string)
-		if !ok || hAgent != agent || hOn != r.On || hAt <= now-float64(l.WindowS) || !r.where(h) {
+		if !ok || hAgent != agent || hOn != r.On || hAt <= now-l.WindowS || !r.where(h) {
 			continue
 		}
 		same := true
