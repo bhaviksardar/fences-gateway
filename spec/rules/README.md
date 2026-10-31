@@ -112,6 +112,17 @@ Given a policy, a request, the history, and whether this request has a granted a
 
 The result is `{decision, rule, reason}`. `rule` is the `id` of the rule that decided it. When several rules decide at the same step, `rule` is the one whose `id` sorts first, so all engines report the same one. `rule` is null at steps 1 and 7.
 
+## Possible requests
+
+The MCP gateway hides from `tools/list` the tools an agent may never call. A tool is hidden when no request for it could be allowed. The engine works this out from the parts of the request that are known (`agent`, `on`, `server`, `tool`). A condition on any other field could go either way, and so could a time window or a limit:
+
+1. The agent is quarantined → not possible.
+2. A `deny` rule that applies to the agent, has no `when`, and whose conditions all hold on the known fields → not possible.
+3. An `allow` or `approve` rule that applies to the agent, and whose conditions on the known fields all hold → possible.
+4. Otherwise: possible only if `default` is `allow`.
+
+Hiding is a convenience, never the check: `tools/call` is decided in full every time.
+
 ## Run limits
 
 The limits on a governed run (budget, steps, time, tokens), as the SDKs and the platform enforce them ([PROTOCOL.md](../PROTOCOL.md)). They aren't policy rules, but every engine that enforces them must agree, so they have conformance cases too ([`run.json`](../conformance/run.json)). The gateway doesn't enforce them.
@@ -134,4 +145,4 @@ Spend is rounded to 9 decimal places (as Python's `round(x, 9)`) before comparin
 
 ## Changes to this file
 
-- **Unreleased:** first version, for Fences Gateway: subjects `mcp`, `http`, `k8s`; conditions; time windows; limits; decision order.
+- **Unreleased:** first version, for Fences Gateway: subjects `mcp`, `http`, `k8s`; conditions; time windows; limits; decision order; possible requests.

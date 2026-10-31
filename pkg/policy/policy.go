@@ -327,6 +327,41 @@ func (p *Policy) Decide(req Request, history []Request, approved bool) Decision 
 	return Decision{Decision: Deny}
 }
 
+// Possible reports whether a request like req could be allowed, perhaps with an approval. req holds only what is
+// known, such as agent, on, server and tool for an MCP tools/list. A condition on a field req doesn't have could go
+// either way, and so could time windows and limits. A gateway hides a tool that isn't possible.
+func (p *Policy) Possible(req Request) bool {
+	agent, _ := req["agent"].(string)
+	on, _ := req["on"].(string)
+	if slices.Contains(p.Quarantined, agent) {
+		return false
+	}
+	possible := p.Default == Allow
+	for i := range p.Rules {
+		r := &p.Rules[i]
+		if r.On != on || len(r.Agents) > 0 && !slices.Contains(r.Agents, agent) {
+			continue
+		}
+		known, holds := r.When == nil, true
+		for j := range r.Where {
+			c := &r.Where[j]
+			if _, ok := req[strings.SplitN(c.Field, ".", 2)[0]]; !ok {
+				known = false
+				continue
+			}
+			holds = holds && c.holds(req)
+		}
+		switch {
+		case !holds:
+		case r.Effect != Deny:
+			possible = true
+		case known: // a deny that certainly matches, whatever the rest of the request is
+			return false
+		}
+	}
+	return possible
+}
+
 func (r *Rule) matches(req Request) bool {
 	if on, _ := req["on"].(string); on != r.On {
 		return false
