@@ -18,6 +18,12 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
   - A command is applied once and acknowledged each time the platform re-sends it. A malformed command is skipped. On `401`, syncing stops and an error is logged every minute.
   - `Ship` sends queued events every 2 s, or once 100 are waiting, up to 500 per batch. A `409` counts as acknowledged, and a `403` batch is dropped and logged. A reply without `acked_seq` keeps the batch queued.
 
+### Gateway (`internal/`, not a public API)
+
+- `internal/mcp`: the MCP gateway. It serves one remote MCP server per upstream, at `/mcp/{upstream}`, over streamable HTTP. The agent is identified from its Fences token on every request, and may reach only the upstreams assigned to it. `tools/list` hides what isn't possible, and `tools/call` is decided before it's forwarded. A denied call gets an MCP error result carrying the reason. Upstream credentials stay in the gateway's config.
+- `internal/engine`: decisions for every surface. It covers quarantine commands that hold until a newer bundle, limit history reserved before forwarding, approvals held up to `approval_timeout_s` and decided again once granted, `on_unavailable` when the platform can't be asked, and a decision event for every request. Unauthenticated events are capped at 10 a second. It also keeps the metrics for health.
+- `internal/approvals`: approval requests, and answers delivered by command.
+
 ## v0.0.1 (specs only, no gateway code)
 
 - `spec/PROTOCOL.md`: the SDK ↔ server protocol, moved from `fences` with its history, unchanged.
