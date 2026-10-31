@@ -64,7 +64,7 @@ func TestDecisions(t *testing.T) {
 		t.Error("RequestHash must not change the request")
 	}
 
-	ev, _ := json.Marshal(Event{Seq: 1, On: "mcp", Decision: Unauthenticated, Arguments: Arguments(mcp, false)})
+	ev, _ := json.Marshal(Event{On: "mcp", Decision: Unauthenticated, Arguments: Arguments(mcp, false)})
 	if !strings.Contains(string(ev), `"agent":null`) || !strings.Contains(string(ev), `"upstream_status":null`) {
 		t.Errorf("unset fields must be null: %s", ev)
 	}

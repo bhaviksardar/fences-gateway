@@ -22,9 +22,9 @@ import (
 // Unauthenticated is the decision for a request whose credential matched no agent. Its event has no agent.
 const Unauthenticated = "unauthenticated"
 
-// Event is one decision, as sent to the platform. Pointer fields are null when unset.
+// Event is one decision, as sent to the platform. Pointer fields are null when unset. It has no seq: pkg/queue assigns
+// one when the event is queued.
 type Event struct {
-	Seq            int64    `json:"seq"`
 	At             float64  `json:"at"`
 	Agent          *string  `json:"agent"`
 	On             string   `json:"on"`
