@@ -21,3 +21,14 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python conformance/reference.py  # stdlib only
       - run: pip install jsonschema && python conformance/reference.py  # and every policy against spec/rules/schema.json
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...  # conformance/: spec/conformance against pkg/policy
