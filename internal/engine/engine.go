@@ -4,9 +4,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math"
@@ -304,6 +306,54 @@ func (e *Engine) event(req policy.Request, d policy.Decision) decisions.Event {
 		ev.Reason = &d.Reason
 	}
 	return ev
+}
+
+// ParseObject decodes a JSON object for the policy to decide on, refusing a key repeated at any depth: parsers
+// disagree on which copy wins, so the upstream could act on a value the policy never saw.
+func ParseObject(data []byte) (map[string]any, error) {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil || m == nil { // first: it also caps the nesting depth
+		return nil, errors.New("must be a JSON object")
+	}
+	if err := noRepeats(json.NewDecoder(bytes.NewReader(data))); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func noRepeats(dec *json.Decoder) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch t {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			k, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if key := k.(string); seen[key] {
+				return fmt.Errorf("key %q is repeated", key)
+			} else {
+				seen[key] = true
+			}
+			if err := noRepeats(dec); err != nil {
+				return err
+			}
+		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := noRepeats(dec); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	_, err = dec.Token() // the closing } or ]
+	return err
 }
 
 // Health is the health object for sync (spec/PROTOCOL-GATEWAY.md, Sync).

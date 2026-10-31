@@ -5,6 +5,7 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 ## Unreleased
 
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: argument names are clipped to 300 characters, as values are. An `acked_seq` above the highest `seq` sent counts as that `seq`.
+- `spec/rules/README.md`: a gateway refuses `args` or `body` that repeat a key.
 - `spec/rules/README.md`: a new section, Possible requests, says which tools `tools/list` hides.
 - `pkg/policy`: the rules engine in Go **(edge)**. `Parse` rejects what `spec/rules/schema.json` rejects (apart from repeats in `quarantined` and `days`, which change nothing), plus duplicate ids, and data after the policy. `Decide` follows `spec/rules/README.md`, Deciding. It passes every policy case in `spec/conformance/`, which `conformance/conformance_test.go` checks in CI. Run limits aren't in it: the gateway doesn't enforce them.
 - `pkg/policy`: `Possible` says whether a partly known request could ever be allowed, for `tools/list` filtering.
@@ -20,11 +21,11 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ### Gateway (`internal/`, not a public API)
 
-- `internal/mcp`: the MCP gateway. It serves one remote MCP server per upstream, at `/mcp/{upstream}`, over streamable HTTP. The agent is identified from its Fences token on every request, and may reach only the upstreams assigned to it. `tools/list` hides what isn't possible, and `tools/call` is decided before it's forwarded. A denied call gets an MCP error result carrying the reason. Upstream credentials stay in the gateway's config.
+- `internal/mcp`: the MCP gateway. It serves one remote MCP server per upstream, at `/mcp/{upstream}`, over streamable HTTP. The agent is identified from its Fences token on every request, and may reach only the upstreams assigned to it. `tools/list` hides what isn't possible, and `tools/call` is decided before it's forwarded. A denied call gets an MCP error result carrying the reason. Upstream credentials stay in the gateway's config. Arguments that repeat a key are refused. A reply from an upstream is capped at 16 MB, and a call at 2 minutes.
 - `internal/engine`: decisions for every surface. It covers quarantine commands that hold until a newer bundle, limit history reserved before forwarding, approvals held up to `approval_timeout_s` and decided again once granted, `on_unavailable` when the platform can't be asked, and a decision event for every request. Unauthenticated events are capped at 10 a second. It also keeps the metrics for health.
 - `internal/approvals`: approval requests, and answers delivered by command.
 - `cmd/fences-gateway`: the gateway process.
-  - It reads a JSON config, which rejects unknown keys, and header values can name environment variables (`${CRM_TOKEN}`).
+  - It reads a JSON config, which rejects unknown keys, and header values can name environment variables, written `${CRM_TOKEN}`. Only that form is expanded, so a secret can contain a bare `$`.
   - On first start it enrolls with `FENCES_ENROLL_TOKEN`, and `pinned_signing_keys` override the keys from enrollment.
   - It keeps its identity, the last good bundle and the event queue in `data_dir`, runs sync and event shipping, and serves `/mcp/{upstream}`, `/healthz` and `/readyz` (`503` until there's a bundle). It shuts down cleanly on SIGTERM.
 

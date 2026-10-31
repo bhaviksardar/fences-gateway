@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -83,11 +84,14 @@ func loadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf("%s: upstream %q needs a url and a name without slashes", path, name)
 		}
 		for k, v := range u.Headers {
-			u.Headers[k] = os.ExpandEnv(v)
+			u.Headers[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
 		}
 	}
 	return &c, nil
 }
+
+// envRef is ${NAME} in a header value. Only that form: a secret may contain a bare $.
+var envRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // run serves until ctx ends. ready, if given, receives the address once the gateway is listening.
 func run(ctx context.Context, path string, ready chan<- string) error {

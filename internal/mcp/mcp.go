@@ -7,8 +7,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	gosync "sync"
@@ -28,8 +29,12 @@ type Upstream struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// CallTimeout caps one forwarded tools/call (spec: timeouts enforced on upstreams).
-var CallTimeout = 2 * time.Minute
+// Limits on upstreams (decisions.md, threat model): how long a forwarded tools/call may take, and how big one
+// response from an upstream may be.
+var (
+	CallTimeout = 2 * time.Minute
+	MaxResponse = int64(16 << 20)
+)
 
 // Gateway serves the MCP surface.
 type Gateway struct {
@@ -146,8 +151,9 @@ func (g *Gateway) listTools(ctx context.Context, agent, upstream string) (*sdk.L
 func (g *Gateway) callTool(ctx context.Context, agent, upstream string, p *sdk.CallToolParamsRaw) (*sdk.CallToolResult, error) {
 	args := map[string]any{}
 	if len(p.Arguments) > 0 && string(p.Arguments) != "null" {
-		if err := json.Unmarshal(p.Arguments, &args); err != nil {
-			return nil, fmt.Errorf("tool arguments must be a JSON object")
+		var err error
+		if args, err = engine.ParseObject(p.Arguments); err != nil {
+			return nil, fmt.Errorf("tool arguments: %w", err)
 		}
 	}
 	call := g.Engine.Decide(ctx, policy.Request{"agent": agent, "on": "mcp", "at": now(), "server": upstream, "tool": p.Name, "args": args})
@@ -192,7 +198,8 @@ func (g *Gateway) session(ctx context.Context, upstream string) (*sdk.ClientSess
 	u := g.Upstreams[upstream]
 	client := sdk.NewClient(&sdk.Implementation{Name: "fences-gateway", Version: g.Engine.Version}, nil)
 	// ponytail: holds g.mu while connecting, so one slow upstream delays first connections to the others
-	s, err := client.Connect(ctx, &sdk.StreamableClientTransport{
+	// Not the agent's request context: the session outlives the request that opened it
+	s, err := client.Connect(context.WithoutCancel(ctx), &sdk.StreamableClientTransport{
 		Endpoint:   u.URL,
 		HTTPClient: &http.Client{Transport: headers{u.Headers, http.DefaultTransport}},
 	}, nil)
@@ -236,5 +243,30 @@ func (t headers) RoundTrip(r *http.Request) (*http.Response, error) {
 	for k, v := range t.h {
 		r.Header.Set(k, v)
 	}
-	return t.next.RoundTrip(r)
+	resp, err := t.next.RoundTrip(r)
+	if err == nil && r.Method == http.MethodPost { // a reply to one request; the GET stream is long-lived by design
+		resp.Body = &capped{resp.Body, MaxResponse + 1}
+	}
+	return resp, err
+}
+
+// capped fails a response body once it's over MaxResponse.
+type capped struct {
+	io.ReadCloser
+	left int64
+}
+
+func (c *capped) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, errors.New("upstream response is over the size limit")
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.ReadCloser.Read(p)
+	c.left -= int64(n)
+	if c.left <= 0 {
+		return n, errors.New("upstream response is over the size limit")
+	}
+	return n, err
 }

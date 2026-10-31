@@ -84,6 +84,13 @@ func TestRun(t *testing.T) {
 	os.WriteFile(config, []byte(`{"platform": "`+platform.URL+`", "name": "test", "data_dir": "`+filepath.Join(dir, "data")+`", "listen": "127.0.0.1:0",
 		"upstreams": {"crm": {"url": "`+upstream.URL+`", "headers": {"X-Api-Key": "${TEST_UPSTREAM_KEY}"}}}}`), 0o600)
 	t.Setenv("TEST_UPSTREAM_KEY", "upstream-secret")
+	if c, _ := loadConfig(config); c.Upstreams["crm"].Headers["X-Api-Key"] != "upstream-secret" {
+		t.Fatal("${TEST_UPSTREAM_KEY} not expanded")
+	}
+	os.WriteFile(filepath.Join(dir, "lit.json"), []byte(`{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u", "headers": {"K": "s3cr$tvalue"}}}}`), 0o600)
+	if c, _ := loadConfig(filepath.Join(dir, "lit.json")); c.Upstreams["a"].Headers["K"] != "s3cr$tvalue" {
+		t.Errorf("a bare $ in a secret must stay: %q", c.Upstreams["a"].Headers["K"])
+	}
 
 	if err := run(context.Background(), config, nil); err == nil || !strings.Contains(err.Error(), "FENCES_ENROLL_TOKEN") {
 		t.Fatalf("without a token or an identity: %v", err)

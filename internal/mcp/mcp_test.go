@@ -254,6 +254,31 @@ func TestGateway(t *testing.T) {
 	}
 }
 
+func TestArgumentsAndLimits(t *testing.T) {
+	h := setup(t)
+	crm, err := connect(t, h.gw+"/mcp/crm", "tok-bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// A repeated key: parsers disagree on which copy wins, so the call is refused before any decision
+	for _, raw := range []string{`{"id": "1", "id": "2"}`, `{"a": {"x": 1, "x": 2}}`, `{"a": [{"x": 1, "x": 2}]}`} {
+		if _, err := crm.CallTool(ctx, &sdk.CallToolParams{Name: "get_ticket", Arguments: json.RawMessage(raw)}); err == nil || !strings.Contains(err.Error(), "repeated") {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+	// Without repeats, nested arguments are forwarded (the test upstream then rejects them by its own schema)
+	if _, err := crm.CallTool(ctx, &sdk.CallToolParams{Name: "get_ticket", Arguments: json.RawMessage(`{"a": {"x": 1}, "b": [1, 1]}`)}); err != nil {
+		t.Errorf("nested arguments without repeats: %v", err)
+	}
+	// An upstream reply over the size limit is an error, not passed through
+	MaxResponse = 10
+	defer func() { MaxResponse = 16 << 20 }()
+	if _, err := crm.CallTool(ctx, &sdk.CallToolParams{Name: "get_ticket"}); err == nil {
+		t.Error("a reply over MaxResponse must fail")
+	}
+}
+
 // When the approval request can't be sent, the rule's on_unavailable decides: deny by default
 func TestApprovalPlatformDown(t *testing.T) {
 	h := setup(t)

@@ -50,6 +50,8 @@ What the engine decides on. Every request has `agent` (the name the gateway reso
 | `http` | `method` (uppercase), `path` (without the query string), `query` (object), `body` (the parsed JSON body, if any) |
 | `k8s` | `verb` (`create`, `update`, `patch`, `delete`, `get`, `list`, `watch`…), `group`, `kind` (e.g. `Pod`), `namespace` (`""` for cluster-scoped), `name`, `subresource` |
 
+A gateway refuses a request whose `args` or `body` repeats a key in any object. JSON parsers disagree on which copy wins, so the policy could decide on a value the upstream never acts on.
+
 ## Conditions
 
 `{"field": "args.amount", "op": "gt", "value": 100}`
