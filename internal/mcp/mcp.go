@@ -4,21 +4,16 @@ package mcp
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	gosync "sync"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bhaviksardar/fences-gateway/internal/engine"
-	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/policy"
 )
 
@@ -75,30 +70,7 @@ func (g *Gateway) authenticate(upstream string, next http.Handler) http.Handler 
 
 // agent is the agent whose Fences token is in h, if it may reach upstream.
 func (g *Gateway) agent(h http.Header, upstream string) (string, bool) {
-	token, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
-	b := g.Engine.Store.Current()
-	if !ok || token == "" || b == nil {
-		return "", false
-	}
-	sum := sha256.Sum256([]byte(token))
-	hash := []byte(hex.EncodeToString(sum[:]))
-	for name, a := range b.Agents {
-		for _, c := range a.Credentials {
-			if c.Type == "token" && subtle.ConstantTimeCompare(hash, []byte(strings.ToLower(c.SHA256))) == 1 {
-				return name, assigned(a, upstream)
-			}
-		}
-	}
-	return "", false
-}
-
-func assigned(a bundle.Agent, upstream string) bool {
-	for _, u := range a.Upstreams {
-		if u == upstream {
-			return true
-		}
-	}
-	return false
+	return g.Engine.Agent(h.Get("Authorization"), upstream)
 }
 
 func now() float64 { return float64(time.Now().UnixMilli()) / 1000 }

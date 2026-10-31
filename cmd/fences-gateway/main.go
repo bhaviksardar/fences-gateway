@@ -27,6 +27,7 @@ import (
 
 	"github.com/bhaviksardar/fences-gateway/internal/approvals"
 	"github.com/bhaviksardar/fences-gateway/internal/engine"
+	"github.com/bhaviksardar/fences-gateway/internal/hook"
 	"github.com/bhaviksardar/fences-gateway/internal/mcp"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/queue"
@@ -76,8 +77,8 @@ func loadConfig(path string) (*Config, error) {
 	if err := sync.CheckURL(c.Platform); err != nil {
 		return nil, fmt.Errorf("%s: platform: %w", path, err)
 	}
-	if c.Name == "" || c.DataDir == "" || len(c.Upstreams) == 0 {
-		return nil, fmt.Errorf("%s: name, data_dir and at least one upstream are required", path)
+	if c.Name == "" || c.DataDir == "" { // no upstreams is fine: the gateway may only answer hooks
+		return nil, fmt.Errorf("%s: name and data_dir are required", path)
 	}
 	for name, u := range c.Upstreams {
 		if u.URL == "" || name == "" || filepath.Base(name) != name {
@@ -151,6 +152,7 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp/", http.MaxBytesHandler(gw.Handler(), 4<<20))
+	mux.Handle("POST /hook/{name}", http.MaxBytesHandler(hook.Handler(eng), 4<<20))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if b := store.Current(); b != nil {

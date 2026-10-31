@@ -4,6 +4,7 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
+- `spec/rules/README.md` **(edge)**: a tool call reported through a hook (Claude Code's `PreToolUse`) is an `mcp` request with `server` set to the hook's name, `claude-code` by default.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: argument names are clipped to 300 characters, as values are. An `acked_seq` above the highest `seq` sent counts as that `seq`.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: an event for an agent the gateway doesn't serve isn't stored, and the rest of its batch is. The reply says how many in `not_served`. Any other 4xx answer to a batch drops it, so it can't hold up the queue behind it. An event's `target` is at most 1,000 characters, its `arguments` at most 50 entries, and a batch at most 512 KB.
 - `pkg/queue` **(edge)**: `Batch(n, maxBytes)` takes a size limit, so this is a breaking change before the first release. `pkg/sync` drops a batch the platform rejects with a 4xx (other than 429) and adds `ErrRejected`. `pkg/decisions` clips `target` and lists at most 50 arguments.
@@ -26,6 +27,9 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 - `internal/mcp`: the MCP gateway. It serves one remote MCP server per upstream, at `/mcp/{upstream}`, over streamable HTTP. The agent is identified from its Fences token on every request, and may reach only the upstreams assigned to it. `tools/list` hides what isn't possible, and `tools/call` is decided before it's forwarded. A denied call gets an MCP error result carrying the reason. Upstream credentials stay in the gateway's config. Arguments that repeat a key are refused. A reply from an upstream is capped at 16 MB, and a call at 2 minutes.
 - `internal/engine`: decisions for every surface. It covers quarantine commands that hold until a newer bundle, limit history reserved before forwarding, approvals held up to `approval_timeout_s` and decided again once granted, `on_unavailable` when the platform can't be asked, and a decision event for every request. Unauthenticated events are capped at 10 a second. It also keeps the metrics for health.
 - `internal/approvals`: approval requests, and answers delivered by command.
+- `internal/hook`: `POST /hook/{name}` decides a tool call an agent reports before making it itself, with the same limits, approvals, quarantine and events as an MCP call. Nothing is forwarded. The agent must be assigned `{name}` as an upstream. `internal/engine` finds the agent from its token (`Agent`), for every surface.
+- `cmd/fences-hook`: a Claude Code `PreToolUse` hook. It asks the gateway, and blocks the call with the reason Claude is shown if it isn't allowed. It fails closed. File paths are relative inside the project and absolute outside it. `docs/claude-code.md` covers setup, with an example policy in `docs/examples/claude-code.json`.
+- `cmd/fences-gateway`: a config with no upstreams is valid, for a gateway that only answers hooks.
 - `cmd/fences-gateway`: the gateway process.
   - It reads a JSON config, which rejects unknown keys, and header values can name environment variables, written `${CRM_TOKEN}`. Only that form is expanded, so a secret can contain a bare `$`.
   - On first start it enrolls with `FENCES_ENROLL_TOKEN`, and `pinned_signing_keys` override the keys from enrollment.

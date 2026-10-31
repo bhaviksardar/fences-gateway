@@ -46,9 +46,11 @@ What the engine decides on. Every request has `agent` (the name the gateway reso
 
 | `on` | Fields |
 |---|---|
-| `mcp` | `server` (the upstream's name in the gateway's config), `tool`, `args` (the call's arguments object) |
+| `mcp` | `server` (the upstream's name in the gateway's config, or a hook's name such as `claude-code`), `tool`, `args` (the call's arguments object) |
 | `http` | `method` (uppercase), `path` (without the query string), `query` (object), `body` (the parsed JSON body, if any) |
 | `k8s` | `verb` (`create`, `update`, `patch`, `delete`, `get`, `list`, `watch`…), `group`, `kind` (e.g. `Pod`), `namespace` (`""` for cluster-scoped), `name`, `subresource` |
+
+A tool call an agent reports through a hook (Claude Code's `PreToolUse`, through `fences-hook`) is an `mcp` request with `server` set to the hook's name, `tool` to the tool's name (`Bash`, `Write`…) and `args` to its input. The agent must be assigned that name as an upstream.
 
 A gateway refuses a request whose `args` or `body` repeats a key in any object. JSON parsers disagree on which copy wins, so the policy could decide on a value the upstream never acts on.
 

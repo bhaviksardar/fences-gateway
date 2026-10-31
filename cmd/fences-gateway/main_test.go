@@ -145,7 +145,7 @@ func TestConfigErrors(t *testing.T) {
 	for name, cfg := range map[string]string{
 		"misspelt setting": `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}, "listn": ":1"}`,
 		"plain http":       `{"platform": "http://fences.example", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}}`,
-		"no upstreams":     `{"platform": "https://x", "name": "n", "data_dir": "d"}`,
+		"no data_dir":      `{"platform": "https://x", "name": "n"}`,
 		"slash in name":    `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a/b": {"url": "http://u"}}}`,
 	} {
 		p := filepath.Join(dir, "c.json")

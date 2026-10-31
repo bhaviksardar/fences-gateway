@@ -6,6 +6,9 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +16,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 	gosync "sync"
 	"time"
 
@@ -82,6 +86,27 @@ func (e *Engine) log() *slog.Logger {
 		return slog.Default()
 	}
 	return e.Log
+}
+
+// Agent is the agent whose Fences token is in the Authorization header (Bearer), and whether it may reach
+// upstream (an MCP upstream, or a hook's name). The agent is found again on every request: a session id is never
+// proof of who's calling. A quarantined agent is found too: each of its requests is denied and recorded.
+func (e *Engine) Agent(authorization, upstream string) (string, bool) {
+	token, ok := strings.CutPrefix(authorization, "Bearer ")
+	b := e.Store.Current()
+	if !ok || token == "" || b == nil {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(token))
+	hash := []byte(hex.EncodeToString(sum[:]))
+	for name, a := range b.Agents {
+		for _, c := range a.Credentials {
+			if c.Type == "token" && subtle.ConstantTimeCompare(hash, []byte(strings.ToLower(c.SHA256))) == 1 {
+				return name, slices.Contains(a.Upstreams, upstream)
+			}
+		}
+	}
+	return "", false
 }
 
 // Unauthenticated records a request whose credential matched no agent, at most 10 a second: anyone can send these,

@@ -1,0 +1,33 @@
+{
+  "default": "allow",
+  "rules": [
+    {"id": "no-push-main", "on": "mcp", "effect": "deny",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"},
+               {"field": "args.command", "op": "matches", "value": "*git push*main*"}],
+     "reason": "Pushing to main is blocked: open a pull request instead"},
+    {"id": "no-rm-rf-root", "on": "mcp", "effect": "deny",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"},
+               {"field": "args.command", "op": "matches", "value": "*rm -rf /*"}],
+     "reason": "rm -rf on an absolute path is blocked: stay inside the project"},
+    {"id": "no-rm-rf-home", "on": "mcp", "effect": "deny",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"},
+               {"field": "args.command", "op": "matches", "value": "*rm -rf ~*"}],
+     "reason": "rm -rf in the home directory is blocked: stay inside the project"},
+    {"id": "no-rm-rf-parent", "on": "mcp", "effect": "deny",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"},
+               {"field": "args.command", "op": "matches", "value": "*rm -rf ..*"}],
+     "reason": "rm -rf above the project is blocked: stay inside the project"},
+    {"id": "no-writes-outside", "on": "mcp", "effect": "deny",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "in", "value": ["Write", "Edit", "MultiEdit"]},
+               {"field": "args.file_path", "op": "matches", "value": "/*"}],
+     "reason": "Writing outside the project is blocked"},
+    {"id": "prod-credentials", "on": "mcp", "effect": "approve",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"},
+               {"field": "args.command", "op": "matches", "value": "*--profile prod*"}],
+     "reason": "Commands with production credentials need a person's approval"},
+    {"id": "daily-cap", "on": "mcp", "effect": "allow",
+     "where": [{"field": "server", "op": "is", "value": "claude-code"}, {"field": "tool", "op": "is", "value": "Bash"}],
+     "limit": {"window_s": 86400, "max": 1000},
+     "reason": "1,000 shell commands a day per developer"}
+  ]
+}
