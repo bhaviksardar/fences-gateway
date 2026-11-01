@@ -478,6 +478,18 @@ func (e *Engine) Quarantine(agent string, bundleVersion int64) {
 	}
 }
 
+// EndWaits ends every call waiting on an approval: each is denied ("approval wait ended"). For shutdown, so a restart
+// doesn't wait on a person; the agent can ask again once the gateway is back.
+func (e *Engine) EndWaits() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, held := range e.held {
+		for _, cancel := range held {
+			cancel()
+		}
+	}
+}
+
 // Quarantined says whether agent is quarantined, by the current bundle or by a command.
 func (e *Engine) Quarantined(agent string) bool {
 	b := e.Store.Current()

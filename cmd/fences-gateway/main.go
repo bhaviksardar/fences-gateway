@@ -194,7 +194,10 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 		}
 		http.Error(w, "no bundle yet", http.StatusServiceUnavailable)
 	})
-	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	reqs, endReqs := context.WithCancel(context.Background())
+	defer endReqs()
+	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: func(net.Listener) context.Context { return reqs }}
 
 	bg, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -250,6 +253,13 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 		return err
 	case <-ctx.Done():
 	}
+	// Calls held for an approval are denied now; other requests get 2 seconds to finish before what's still open
+	// (an agent's MCP stream, a slow upstream) is cancelled, so a restart takes seconds, not a person's answer
+	eng.EndWaits()
+	go func() {
+		time.Sleep(2 * time.Second)
+		endReqs()
+	}()
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
 	return srv.Shutdown(shutdown)

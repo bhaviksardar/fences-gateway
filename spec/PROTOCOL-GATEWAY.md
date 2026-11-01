@@ -102,7 +102,7 @@ The gateway verifies the exact bytes it received, then parses them. It never re-
 | Field | Meaning |
 |---|---|
 | `version` | Increases by at least 1 with every new bundle for this gateway. |
-| `agents` | Every agent this gateway serves, and how to recognize it. A **token** is one Fences issued, sent by an MCP client as `Authorization: Bearer`. A **header** is an API key the vendor sends in a named header. Only SHA-256 hashes are in the bundle, never the secrets. |
+| `agents` | Every agent this gateway serves, and how to recognize it. A **token** is one Fences issued, sent by an MCP client as `Authorization: Bearer`. A **header** is an API key the vendor sends in a named header (reserved: the platform doesn't issue these yet, and a gateway refuses a request that offers only one). Only SHA-256 hashes are in the bundle, never the secrets. |
 | `upstreams` | The upstream MCP servers (names from the gateway's config) the agent may reach. Upstream credentials stay in the gateway's config and are never in a bundle. |
 | `policy` | A policy, per [rules/README.md](rules/README.md). |
 | `approval_timeout_s` | How long a call waits for an approval before it's denied. |
