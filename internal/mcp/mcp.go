@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	gosync "sync"
 	"time"
@@ -109,7 +110,8 @@ func (g *Gateway) listTools(ctx context.Context, agent, upstream string) (*sdk.L
 	for tool, err := range s.Tools(ctx, nil) {
 		if err != nil {
 			g.drop(upstream, s)
-			return nil, fmt.Errorf("upstream %s: %w", upstream, err)
+			slog.Warn("fences: upstream MCP server failed", "upstream", upstream, "err", err)
+			return nil, fmt.Errorf("upstream %s didn't answer", upstream)
 		}
 		// Annotations such as readOnlyHint come from the upstream and never affect a decision
 		if b != nil && !g.Engine.Quarantined(agent) &&
@@ -155,7 +157,8 @@ func (g *Gateway) forward(ctx context.Context, upstream string, p *sdk.CallToolP
 		if ctx.Err() == nil {
 			g.drop(upstream, s) // the session may be broken: reconnect next time
 		}
-		return nil, fmt.Errorf("upstream %s: %w", upstream, err)
+		slog.Warn("fences: upstream MCP server failed", "upstream", upstream, "err", err)
+		return nil, fmt.Errorf("upstream %s didn't answer", upstream) // the details name internal hosts: they go to the log
 	}
 	return res, nil
 }
@@ -176,7 +179,8 @@ func (g *Gateway) session(ctx context.Context, upstream string) (*sdk.ClientSess
 		HTTPClient: &http.Client{Transport: headers{u.Headers, http.DefaultTransport}},
 	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("upstream %s: %w", upstream, err)
+		slog.Warn("fences: couldn't connect to the upstream MCP server", "upstream", upstream, "err", err)
+		return nil, fmt.Errorf("upstream %s didn't answer", upstream)
 	}
 	if g.sessions == nil {
 		g.sessions = map[string]*sdk.ClientSession{}

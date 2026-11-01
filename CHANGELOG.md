@@ -4,7 +4,17 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
-Nothing yet.
+Fixes from a review of 0.1.0:
+- `spec/rules/README.md`, `pkg/policy` **(edge)**: a negative amount counts as over a `sum` limit. Before, `{"amount": -1000}` was allowed and lowered the running total, so the next $1,500 fit under a $500 cap. There are two new conformance cases, and the reference engine agrees.
+- `pkg/policy` **(edge)**: `LimitKey` writes a missing `per` value so that no JSON value can match it. Before, an object `{"\u0000missing": true}` could.
+- `internal/engine`:
+  - A caller's deadline running out while it waits on an approval ends the wait. Before, it was taken as "the platform can't be asked", so `on_unavailable: allow` let the call through without approval.
+  - A request still deciding with the previous bundle no longer wipes the limit counts the new bundle keeps. Before, a cap could let every request through while bundles switched.
+  - Kubernetes approvals that are never retried are forgotten after 10 minutes.
+- `internal/proxy`:
+  - Headers that frameworks read as another method or path (`X-HTTP-Method-Override`, `X-Original-URL`, `X-Rewrite-URL` and similar) are removed before forwarding.
+  - Upstream errors no longer name internal hosts to the agent, in MCP too. They're logged instead.
+- `cmd/fences-gateway`: upstream and API names are letters, digits, `_ . -`, and don't start with `.`. Before, `..` or `{x}` got through.
 
 ## 0.1.0 (2026-10-31)
 

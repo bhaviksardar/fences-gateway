@@ -59,6 +59,12 @@
     {"name": "refunds older than an hour don't count",
      "request": {"agent": "refund-bot", "on": "http", "at": 1793610000, "method": "POST", "path": "/refunds", "body": {"amount": 50}},
      "history": [{"agent": "refund-bot", "on": "http", "at": 1793606000, "method": "POST", "path": "/refunds", "body": {"amount": 500}}],
-     "expect": {"decision": "allow", "rule": "refunds"}}
+     "expect": {"decision": "allow", "rule": "refunds"}},
+    {"name": "a negative amount is over the limit: it would lower the total for the next request",
+     "request": {"agent": "refund-bot", "on": "http", "at": 1793610000, "method": "POST", "path": "/refunds", "body": {"amount": -1000}},
+     "expect": {"decision": "rate_limited", "rule": "refunds", "reason": "At most $500 of refunds per hour"}},
+    {"name": "a negative amount as a string is over the limit too",
+     "request": {"agent": "refund-bot", "on": "http", "at": 1793610000, "method": "POST", "path": "/refunds", "body": {"amount": "-5"}},
+     "expect": {"decision": "rate_limited", "rule": "refunds", "reason": "At most $500 of refunds per hour"}}
   ]
 }

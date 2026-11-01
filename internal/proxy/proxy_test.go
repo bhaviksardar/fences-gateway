@@ -119,6 +119,12 @@ func TestRefunds(t *testing.T) {
 	if r := got[0]; r.URL.Path != "/v1/refunds" || r.Header.Get("X-Api-Key") != "api-secret" || r.Header.Get("Authorization") != "" {
 		t.Errorf("forwarded as %s with %v", r.URL.Path, r.Header)
 	}
+	// Headers that would make the API act on another method or path than the one decided don't reach it
+	send("GET", "/http/refunds/refunds/7", "", "tok-bot", "X-HTTP-Method-Override", "DELETE", "X-Original-URL", "/admin")
+	if r := got[len(got)-1]; r.Header.Get("X-HTTP-Method-Override") != "" || r.Header.Get("X-Original-URL") != "" {
+		t.Errorf("override headers forwarded: %v", r.Header)
+	}
+	got = got[:len(got)-1]
 	// Over $100: held until approved
 	go approve(true, "240")
 	if code, _ := send("POST", "/http/refunds/refunds", `{"amount": 240}`, "tok-bot"); code != 201 {
@@ -203,6 +209,9 @@ func TestUpstreamDown(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != 502 {
 		t.Fatalf("down API: %v %v", resp, err)
+	}
+	if body, _ := io.ReadAll(resp.Body); strings.Contains(string(body), "127.0.0.1") {
+		t.Errorf("the agent is told the upstream's address: %s", body)
 	}
 	if h := eng.Health(); !strings.Contains(mustJSON(h), `"down":1`) {
 		t.Errorf("an unreachable API counts as an upstream error: %s", mustJSON(h))

@@ -109,7 +109,7 @@ def over_limit(rule: dict, request: dict, history: list) -> bool:
     if "sum" not in lim:
         return len(past) + 1 > lim["max"]
     amount = number(lookup(request, lim["sum"]))
-    if amount is None:
+    if amount is None or amount < 0:  # can't be checked, or would lower the total
         return True
     return sum(number(lookup(h, lim["sum"])) or 0.0 for h in past) + amount > lim["max"]
 

@@ -294,19 +294,14 @@ func (c *count) expire(now, window float64) {
 func (e *Engine) signatures(b *bundle.Bundle) map[*policy.Rule]string {
 	if e.sigsFor != b {
 		e.sigs, e.sigsFor = map[*policy.Rule]string{}, b
-		live := map[string]bool{}
 		for i := range b.Policy.Rules {
 			if r := &b.Policy.Rules[i]; r.Limit != nil {
 				sig, _ := json.Marshal([]any{r.ID, r.On, r.Where, r.Limit.Sum, r.Limit.Per})
 				e.sigs[r] = string(sig)
-				live[string(sig)] = true
 			}
 		}
-		for k := range e.counts { // counts of rules that are gone
-			if !live[k[:strings.IndexByte(k, 0)]] {
-				delete(e.counts, k)
-			}
-		}
+		// Counts of rules that are gone go in reserve's sweep, not here: a request still deciding with the previous
+		// bundle would switch back, and each switch would wipe the other bundle's counts
 	}
 	return e.sigs
 }
@@ -382,7 +377,7 @@ func (e *Engine) approve(ctx context.Context, b *bundle.Bundle, agent string, re
 	switch {
 	case errors.Is(err, approvals.ErrTimeout):
 		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval timed out"}, false, id
-	case errors.Is(err, context.Canceled) && ctx.Err() != nil:
+	case ctx.Err() != nil: // a quarantine, shutdown, or the caller gone or out of time: never "the platform is down"
 		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval wait ended"}, false, id
 	case err != nil:
 		if denied, ok := e.unavailable(b, d, err); !ok {
@@ -495,6 +490,13 @@ func (e *Engine) approveLater(ctx context.Context, b *bundle.Bundle, agent strin
 		e.mu.Lock()
 		a.answered, a.granted, a.reason, a.at = true, ans.Granted, reason, time.Now()
 		e.mu.Unlock()
+		time.AfterFunc(GrantTTL, func() { // never retried: forget it
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if e.later[key] == a {
+				delete(e.later, key)
+			}
+		})
 	}()
 	return waiting(id), false, id
 }

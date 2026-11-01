@@ -462,7 +462,7 @@ func (r *Rule) overLimit(req Request, counts Counts) bool {
 		return float64(count+1) > *l.Max
 	}
 	amount, ok := r.Amount(req)
-	return !ok || total+amount > *l.Max // an amount that can't be checked is over the limit
+	return !ok || amount < 0 || total+amount > *l.Max // can't be checked, or would lower the total: over the limit
 }
 
 // CountsToward says whether req, once allowed, counts against r's limit: it is of r's subject and meets r's where.
@@ -477,11 +477,11 @@ func (r *Rule) CountsToward(req Request) bool {
 func (r *Rule) LimitKey(req Request) string {
 	key := []any{req["agent"]}
 	for _, f := range r.Limit.Per {
-		v := lookup(req, f)
-		if v == missing {
-			v = map[string]bool{"\x00missing": true} // can't be confused with a value from JSON
+		if v := lookup(req, f); v == missing {
+			key = append(key, []any{}) // a missing value: [] here, [value] for a value, so no JSON value can pose as it
+		} else {
+			key = append(key, []any{v})
 		}
-		key = append(key, v)
 	}
 	b, _ := json.Marshal(key)
 	return string(b)

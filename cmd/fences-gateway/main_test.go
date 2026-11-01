@@ -149,6 +149,8 @@ func TestConfigErrors(t *testing.T) {
 		"shared not redis": `{"platform": "https://x", "name": "n", "data_dir": "d", "shared_limits": {"url": "http://x"}}`,
 		"api not http":     `{"platform": "https://x", "name": "n", "data_dir": "d", "apis": {"a": {"url": "file:///etc"}}}`,
 		"api and upstream": `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}, "apis": {"a": {"url": "http://u"}}}`,
+		"dot-dot name":     `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"..": {"url": "http://u"}}}`,
+		"pattern in name":  `{"platform": "https://x", "name": "n", "data_dir": "d", "apis": {"{x}": {"url": "http://u"}}}`,
 		"slash in name":    `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a/b": {"url": "http://u"}}}`,
 	} {
 		p := filepath.Join(dir, "c.json")

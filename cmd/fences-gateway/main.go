@@ -96,13 +96,14 @@ func loadConfig(path string) (*Config, error) {
 	if err := sync.CheckURL(c.Platform); err != nil {
 		return nil, fmt.Errorf("%s: platform: %w", path, err)
 	}
-	c.Name = envRef.ReplaceAllStringFunc(c.Name, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) }) // ${HOSTNAME}: one per replica
-	if c.Name == "" || c.DataDir == "" {                                                                            // no upstreams or apis is fine: the gateway may only answer hooks
+	// ${HOSTNAME} in name: one per replica. No upstreams or apis is fine: the gateway may only answer hooks
+	c.Name = envRef.ReplaceAllStringFunc(c.Name, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+	if c.Name == "" || c.DataDir == "" {
 		return nil, fmt.Errorf("%s: name and data_dir are required", path)
 	}
 	for name, u := range c.Upstreams {
-		if u.URL == "" || name == "" || filepath.Base(name) != name {
-			return nil, fmt.Errorf("%s: upstream %q needs a url and a name without slashes", path, name)
+		if u.URL == "" || !upstreamName.MatchString(name) {
+			return nil, fmt.Errorf("%s: upstream %q needs a url, and a name of letters, digits, _ . - (not starting with .)", path, name)
 		}
 		for k, v := range u.Headers {
 			u.Headers[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
@@ -110,8 +111,8 @@ func loadConfig(path string) (*Config, error) {
 	}
 	for name, a := range c.APIs {
 		u, err := url.Parse(a.URL)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || name == "" || filepath.Base(name) != name {
-			return nil, fmt.Errorf("%s: api %q needs an http(s) url and a name without slashes", path, name)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || !upstreamName.MatchString(name) {
+			return nil, fmt.Errorf("%s: api %q needs an http(s) url, and a name of letters, digits, _ . - (not starting with .)", path, name)
 		}
 		if _, dup := c.Upstreams[name]; dup { // agents are assigned names: one name, one thing
 			return nil, fmt.Errorf("%s: %q is both an upstream and an api", path, name)
@@ -134,6 +135,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	return &c, nil
 }
+
+// upstreamName is what the platform accepts for an assigned upstream; it's also a path segment in routes.
+var upstreamName = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$`)
 
 // envRef is ${NAME} in a header value. Only that form: a secret may contain a bare $.
 var envRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)

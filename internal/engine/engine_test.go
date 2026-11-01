@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	gosync "sync"
@@ -14,10 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bhaviksardar/fences-gateway/internal/approvals"
 	"github.com/bhaviksardar/fences-gateway/internal/shared"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/policy"
 	"github.com/bhaviksardar/fences-gateway/pkg/queue"
+	"github.com/bhaviksardar/fences-gateway/pkg/sync"
 )
 
 // The engine keeps running counts for limits instead of every allowed request. Random traffic must be decided
@@ -139,5 +143,57 @@ func compare(t *testing.T, engines []*Engine) {
 	}
 	if counts[policy.Allow] == 0 || counts[policy.RateLimited] < 100 {
 		t.Errorf("the traffic should hit the limits often: %v", counts)
+	}
+}
+
+func signedBundle(t *testing.T, store *bundle.Store, priv ed25519.PrivateKey, version int, pol string) {
+	payload := fmt.Sprintf(`{"version": %d, "gateway_id": "gw_1", "approval_timeout_s": 60, "policy": %s, "agents": {}}`, version, pol)
+	env, _ := json.Marshal(bundle.Envelope{KeyID: "k1", Payload: base64.StdEncoding.EncodeToString([]byte(payload)),
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(payload)))})
+	if err := store.Apply(env); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A caller's deadline running out while it waits on an approval is the wait ending, never "the platform can't be
+// asked": that would let on_unavailable: allow through without anyone approving.
+func TestApprovalDeadlineIsNotUnavailable(t *testing.T) {
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok": true}`)) // asked; nobody answers
+	}))
+	defer platform.Close()
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	store := &bundle.Store{Path: filepath.Join(t.TempDir(), "b.json"), Keys: map[string]ed25519.PublicKey{"k1": pub}, GatewayID: "gw_1"}
+	signedBundle(t, store, priv, 1, `{"rules": [{"id": "pay", "on": "http", "effect": "approve", "on_unavailable": "allow"}]}`)
+	q, _ := queue.Open(filepath.Join(t.TempDir(), "q.db"), 0)
+	defer q.Close()
+	_, gwKey, _ := ed25519.GenerateKey(nil)
+	e := &Engine{Store: store, Queue: q, Approvals: &approvals.Manager{Client: &sync.Client{BaseURL: platform.URL, Kind: "gateway",
+		ID: &sync.Identity{GatewayID: "gw_1", PrivateKey: gwKey}}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	c := e.Decide(ctx, policy.Request{"agent": "a", "on": "http", "at": 1793610000.0, "method": "POST", "path": "/pay"})
+	if c.Allowed() || c.Decision.Reason != "approval wait ended" {
+		t.Errorf("deadline while waiting: %+v", c.Decision)
+	}
+}
+
+// A request still deciding with the previous bundle mustn't wipe the counts the new bundle keeps.
+func TestCountsSurviveBundleSwitches(t *testing.T) {
+	e := newEngine(t)
+	old := e.Store.Current()
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	e.Store.Keys = map[string]ed25519.PublicKey{"k1": pub}
+	pol := `{"rules": [{"id": "new-cap", "on": "http", "effect": "allow", "limit": {"window_s": 60, "max": 2}}]}`
+	signedBundle(t, e.Store, priv, 2, pol)
+	cur := e.Store.Current()
+	ask := func(b *bundle.Bundle, i int) string {
+		d, _ := e.decide(context.Background(), b, "a", policy.Request{"agent": "a", "on": "http", "at": 1793610000.0 + float64(i),
+			"method": "GET", "path": "/x"}, false)
+		return d.Decision
+	}
+	got := []string{ask(cur, 0), ask(old, 1), ask(cur, 2), ask(old, 3), ask(cur, 4)}
+	if got[0] != "allow" || got[2] != "allow" || got[4] != "rate_limited" {
+		t.Errorf("new-cap allows 2 a minute whatever the old bundle's requests did: %v", got)
 	}
 }

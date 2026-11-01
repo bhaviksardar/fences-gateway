@@ -97,7 +97,7 @@ On an `allow` or `approve` rule. It caps what that rule lets through, per agent:
 |---|---|
 | `window_s` | The window, in seconds. |
 | `max` | Without `sum`: how many requests the rule lets through in the window. With `sum`: the most the field may add up to. |
-| `sum` | A field path. Requests count by that field's number (see Conditions) instead of by 1. A request whose field isn't a number counts as **over the limit**, since its amount can't be checked. |
+| `sum` | A field path. Requests count by that field's number (see Conditions) instead of by 1. A request whose field isn't a number, or is negative, counts as **over the limit**. Its amount can't be checked, and a negative one would lower the total for the requests after it. |
 | `per` | Field paths. Requests are counted separately for each combination of these values ("3 restarts per namespace"). Absent: one count for the agent. |
 
 **History** is the requests the gateway already let through (decision `allow`), with their `at`. A request counts against a rule's limit if it was from the same agent, of the rule's `on`, matches the rule's `where`, has the same `per` values, and is in the window: `at > now − window_s`. The request being decided counts too: it is over the limit if `count + 1 > max`, or `total + amount > max` with `sum`.

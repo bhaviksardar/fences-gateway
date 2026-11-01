@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -22,6 +23,11 @@ type API struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
 }
+
+// overrides are headers that frameworks read as a different method or path than the request line's: the policy decided
+// the request line, so the API mustn't act on anything else.
+var overrides = []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override", "X-Original-URL", "X-Rewrite-URL",
+	"X-Original-Method", "X-Forwarded-Prefix", "X-Forwarded-Path"}
 
 // CallTimeout is how long a forwarded request may take, response included.
 var CallTimeout = 2 * time.Minute
@@ -106,6 +112,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			pr.Out.URL.Path, pr.Out.URL.RawPath = req["path"].(string), "" // the path that was decided, re-encoded
 			pr.SetURL(target)
 			pr.Out.Header.Del("Authorization") // the agent's Fences token isn't the API's business
+			for _, h := range overrides {
+				pr.Out.Header.Del(h)
+			}
 			for k, v := range api.Headers {
 				pr.Out.Header.Set(k, v)
 			}
@@ -114,7 +123,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		ModifyResponse: func(resp *http.Response) error { status = resp.StatusCode; return nil },
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			status = http.StatusBadGateway
-			fail(w, status, "upstream "+name+": "+err.Error())
+			slog.Warn("fences: upstream API failed", "api", name, "err", err)
+			fail(w, status, "upstream "+name+" didn't answer") // the details name internal hosts: they go to the log
 		},
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), CallTimeout)
