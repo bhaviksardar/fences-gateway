@@ -146,6 +146,8 @@ func TestConfigErrors(t *testing.T) {
 		"misspelt setting": `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}, "listn": ":1"}`,
 		"plain http":       `{"platform": "http://fences.example", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}}`,
 		"no data_dir":      `{"platform": "https://x", "name": "n"}`,
+		"api not http":     `{"platform": "https://x", "name": "n", "data_dir": "d", "apis": {"a": {"url": "file:///etc"}}}`,
+		"api and upstream": `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a": {"url": "http://u"}}, "apis": {"a": {"url": "http://u"}}}`,
 		"slash in name":    `{"platform": "https://x", "name": "n", "data_dir": "d", "upstreams": {"a/b": {"url": "http://u"}}}`,
 	} {
 		p := filepath.Join(dir, "c.json")

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"github.com/bhaviksardar/fences-gateway/internal/engine"
 	"github.com/bhaviksardar/fences-gateway/internal/hook"
 	"github.com/bhaviksardar/fences-gateway/internal/mcp"
+	"github.com/bhaviksardar/fences-gateway/internal/proxy"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/queue"
 	"github.com/bhaviksardar/fences-gateway/pkg/sync"
@@ -44,6 +46,7 @@ type Config struct {
 	DataDir              string                  `json:"data_dir"`
 	Listen               string                  `json:"listen"`
 	Upstreams            map[string]mcp.Upstream `json:"upstreams"`
+	APIs                 map[string]proxy.API    `json:"apis"` // HTTP APIs, served at /http/{name}/
 	ReportArgumentValues bool                    `json:"report_argument_values"`
 	PinnedSigningKeys    map[string]string       `json:"pinned_signing_keys"` // key_id → base64; overrides enrollment's
 	MaxQueuedEvents      int                     `json:"max_queued_events"`
@@ -77,7 +80,7 @@ func loadConfig(path string) (*Config, error) {
 	if err := sync.CheckURL(c.Platform); err != nil {
 		return nil, fmt.Errorf("%s: platform: %w", path, err)
 	}
-	if c.Name == "" || c.DataDir == "" { // no upstreams is fine: the gateway may only answer hooks
+	if c.Name == "" || c.DataDir == "" { // no upstreams or apis is fine: the gateway may only answer hooks
 		return nil, fmt.Errorf("%s: name and data_dir are required", path)
 	}
 	for name, u := range c.Upstreams {
@@ -86,6 +89,18 @@ func loadConfig(path string) (*Config, error) {
 		}
 		for k, v := range u.Headers {
 			u.Headers[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+		}
+	}
+	for name, a := range c.APIs {
+		u, err := url.Parse(a.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || name == "" || filepath.Base(name) != name {
+			return nil, fmt.Errorf("%s: api %q needs an http(s) url and a name without slashes", path, name)
+		}
+		if _, dup := c.Upstreams[name]; dup { // agents are assigned names: one name, one thing
+			return nil, fmt.Errorf("%s: %q is both an upstream and an api", path, name)
+		}
+		for k, v := range a.Headers {
+			a.Headers[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
 		}
 	}
 	return &c, nil
@@ -152,6 +167,7 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp/", http.MaxBytesHandler(gw.Handler(), 4<<20))
+	mux.Handle("/http/", http.MaxBytesHandler((&proxy.Proxy{Engine: eng, APIs: cfg.APIs}).Handler(), 4<<20))
 	mux.Handle("POST /hook/{name}", http.MaxBytesHandler(hook.Handler(eng), 4<<20))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +191,7 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 	if ready != nil {
 		ready <- ln.Addr().String()
 	}
-	slog.Info("fences-gateway: serving", "listen", ln.Addr().String(), "upstreams", len(cfg.Upstreams), "version", version)
+	slog.Info("fences-gateway: serving", "listen", ln.Addr().String(), "upstreams", len(cfg.Upstreams), "apis", len(cfg.APIs), "version", version)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	select {

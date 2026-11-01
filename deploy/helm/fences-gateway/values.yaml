@@ -12,6 +12,11 @@ config:
   #    url: http://crm-mcp.tools.svc:8000/mcp
   #    headers:
   #      Authorization: "Bearer ${CRM_TOKEN}"  # from envFromSecret
+  apis: {}  # HTTP APIs, served at /http/<name>/
+  #  refunds:
+  #    url: http://refunds.payments.svc:8080/api
+  #    headers:
+  #      X-Api-Key: "${REFUNDS_KEY}"
   report_argument_values: false
   # pinned_signing_keys: {k1: "<base64>"}
 

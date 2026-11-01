@@ -4,6 +4,7 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
+- `spec/rules/README.md` **(edge)**: an `http` request has `server`, the API's name in the gateway's config. Its `path` is decoded, `query` values are strings, and a repeated query parameter is refused.
 - `spec/rules/README.md` **(edge)**: a tool call reported through a hook (Claude Code's `PreToolUse`) is an `mcp` request with `server` set to the hook's name, `claude-code` by default.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: argument names are clipped to 300 characters, as values are. An `acked_seq` above the highest `seq` sent counts as that `seq`.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: an event for an agent the gateway doesn't serve isn't stored, and the rest of its batch is. The reply says how many in `not_served`. Any other 4xx answer to a batch drops it, so it can't hold up the queue behind it. An event's `target` is at most 1,000 characters, its `arguments` at most 50 entries, and a batch at most 512 KB.
@@ -28,6 +29,7 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 - `internal/engine`: decisions for every surface. It covers quarantine commands that hold until a newer bundle, limit history reserved before forwarding, approvals held up to `approval_timeout_s` and decided again once granted, `on_unavailable` when the platform can't be asked, and a decision event for every request. Unauthenticated events are capped at 10 a second. It also keeps the metrics for health.
 - `internal/approvals`: approval requests, and answers delivered by command.
 - `internal/hook`: `POST /hook/{name}` decides a tool call an agent reports before making it itself, with the same limits, approvals, quarantine and events as an MCP call. Nothing is forwarded. The agent must be assigned `{name}` as an upstream. `internal/engine` finds the agent from its token (`Agent`), for every surface.
+- `internal/proxy`: the HTTP API gateway. It's a reverse proxy per API at `/http/{api}/{path...}`, configured under `apis`. Each request is decided on its method, path, query and JSON body before it's forwarded, with the same limits (including `sum` caps reserved before forwarding), approvals, quarantine and events as MCP. A body that is a JSON object is decided on whatever its Content-Type says. The agent's token is removed and the API's headers from the config are added. Denied requests get `403`, rate-limited ones `429`, and an unreachable API `502`. A 5xx counts as an upstream error in health. `docs/http-proxy.md` covers it.
 - `cmd/fences-hook`: a Claude Code `PreToolUse` hook. It asks the gateway, and blocks the call with the reason Claude is shown if it isn't allowed. It fails closed. File paths are relative inside the project and absolute outside it. `docs/claude-code.md` covers setup, with an example policy in `docs/examples/claude-code.json`.
 - `cmd/fences-gateway`: a config with no upstreams is valid, for a gateway that only answers hooks.
 - `cmd/fences-gateway`: the gateway process.

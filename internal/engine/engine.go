@@ -75,7 +75,8 @@ func (c *Call) Done(upstream string, status any, took time.Duration) {
 		ms := float64(took.Microseconds()) / 1000
 		c.ev.UpstreamMS = &ms
 	}
-	c.e.stats.upstream(upstream, status == "error")
+	code, _ := status.(int)
+	c.e.stats.upstream(upstream, status == "error" || code >= 500)
 	if _, err := c.e.Queue.Push(c.ev); err != nil {
 		c.e.log().Error("fences: decision event not queued", "err", err)
 	}
