@@ -28,7 +28,14 @@ enrollToken:
 # A Secret whose keys become environment variables, for ${NAME} in upstream headers.
 envFromSecret: ""
 
-# ponytail: one replica; each replica is its own enrolled gateway, so more need Phase 7's shared rate windows
+# Replicas: each pod enrolls as its own gateway in one group, so make the enrollment token for this many gateways.
+# More than one needs sharedLimits, so the group counts limits together (docs/replicas.md).
+replicas: 1
+sharedLimits:
+  urlSecret:  # a Secret holding redis://[user:password@]host:port[/db] (or rediss://)
+    name: ""
+    key: url
+  prefix: ""  # default fences:limits:
 storage:
   size: 1Gi
   storageClassName: ""

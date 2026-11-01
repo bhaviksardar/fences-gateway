@@ -23,6 +23,12 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    services:
+      redis:  # replicas' shared limits (internal/engine TestSharedLimits)
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      FENCES_TEST_REDIS: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,3 +44,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/fences-gateway
+      - run: helm template gw deploy/helm/fences-gateway --set replicas=3 --set sharedLimits.urlSecret.name=redis --set kubernetes.enabled=true > /dev/null
+      - run: "! helm template gw deploy/helm/fences-gateway --set replicas=3 2>/dev/null"  # refused without shared limits

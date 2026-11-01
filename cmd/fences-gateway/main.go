@@ -32,6 +32,7 @@ import (
 	"github.com/bhaviksardar/fences-gateway/internal/k8s"
 	"github.com/bhaviksardar/fences-gateway/internal/mcp"
 	"github.com/bhaviksardar/fences-gateway/internal/proxy"
+	"github.com/bhaviksardar/fences-gateway/internal/shared"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/queue"
 	"github.com/bhaviksardar/fences-gateway/pkg/sync"
@@ -51,7 +52,11 @@ type Config struct {
 	ReportArgumentValues bool                    `json:"report_argument_values"`
 	PinnedSigningKeys    map[string]string       `json:"pinned_signing_keys"` // key_id → base64; overrides enrollment's
 	MaxQueuedEvents      int                     `json:"max_queued_events"`
-	TLS                  *struct {
+	SharedLimits         *struct {
+		URL    string `json:"url"`    // redis://[user:password@]host:port[/db] or rediss://; ${NAME} is expanded
+		Prefix string `json:"prefix"` // default fences:limits:
+	} `json:"shared_limits"` // replicas of a group count limits together (spec/PROTOCOL-GATEWAY.md, Replicas)
+	TLS *struct {
 		CertFile string `json:"cert_file"`
 		KeyFile  string `json:"key_file"`
 	} `json:"tls"` // serve https: the Kubernetes API server calls webhooks over TLS only
@@ -91,7 +96,8 @@ func loadConfig(path string) (*Config, error) {
 	if err := sync.CheckURL(c.Platform); err != nil {
 		return nil, fmt.Errorf("%s: platform: %w", path, err)
 	}
-	if c.Name == "" || c.DataDir == "" { // no upstreams or apis is fine: the gateway may only answer hooks
+	c.Name = envRef.ReplaceAllStringFunc(c.Name, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) }) // ${HOSTNAME}: one per replica
+	if c.Name == "" || c.DataDir == "" {                                                                            // no upstreams or apis is fine: the gateway may only answer hooks
 		return nil, fmt.Errorf("%s: name and data_dir are required", path)
 	}
 	for name, u := range c.Upstreams {
@@ -116,6 +122,12 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if c.TLS != nil && (c.TLS.CertFile == "" || c.TLS.KeyFile == "") {
 		return nil, fmt.Errorf("%s: tls needs cert_file and key_file", path)
+	}
+	if c.SharedLimits != nil {
+		c.SharedLimits.URL = envRef.ReplaceAllStringFunc(c.SharedLimits.URL, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+		if _, err := shared.Open(c.SharedLimits.URL, c.SharedLimits.Prefix); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	if c.Kubernetes != nil {
 		c.Kubernetes.AuditToken = envRef.ReplaceAllStringFunc(c.Kubernetes.AuditToken, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
@@ -178,6 +190,9 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 
 	eng := &engine.Engine{Store: store, Queue: q, Approvals: &approvals.Manager{Client: client},
 		ReportValues: cfg.ReportArgumentValues, Version: version}
+	if cfg.SharedLimits != nil {
+		eng.Shared, _ = shared.Open(cfg.SharedLimits.URL, cfg.SharedLimits.Prefix) // checked when the config was loaded
+	}
 	syncer := &sync.Syncer{Client: client, Store: store, Health: eng.Health, Apply: eng.Apply, Urgent: eng.Approvals.Pending}
 	gw := &mcp.Gateway{Engine: eng, Upstreams: cfg.Upstreams}
 	defer gw.Close()

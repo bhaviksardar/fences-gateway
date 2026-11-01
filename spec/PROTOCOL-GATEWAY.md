@@ -34,7 +34,7 @@ Sent once, at first start. The gateway creates an Ed25519 key pair and keeps the
 {"token": "fge_...", "kind": "gateway", "name": "prod-mcp-1", "public_key": "<base64, 32 bytes>", "version": "0.1.0"}
 ```
 
-- `token`: created in the dashboard. Single use, expires after 24 hours.
+- `token`: created in the dashboard. It enrolls as many gateways as it was made for (one by default), and expires after 24 hours. Gateways enrolled with the same token are **replicas** of one group (see Replicas).
 - `kind`: `gateway` or `device`.
 
 **Response:**
@@ -44,7 +44,7 @@ Sent once, at first start. The gateway creates an Ed25519 key pair and keeps the
 
 `signing_keys` are the platform's public keys for verifying bundles. A gateway configured with `pinned_signing_keys` uses only those and ignores the list here, so a platform that swaps keys can't push a bundle (threat model, [decisions.md](../docs/decisions.md)).
 
-A used, expired or unknown token gets `401`.
+A used-up, expired or unknown token gets `401`.
 
 ## Signing requests
 
@@ -208,6 +208,20 @@ Commands arrive in sync responses and are applied in the order listed. Unknown t
 
 ---
 
+## Replicas
+
+Several gateways can serve the same agents behind one address: a group, enrolled with one token that allows that many enrollments. Each replica has its own identity, `seq` and bundle. The platform assigns agents to the whole group, so every replica's bundle serves the same agents with the same policy. A replica that enrolls later gets the group's assignments.
+
+**Shared limits.** Each replica keeps a limit's count on its own, so a group of N would allow N times the limit. A group shares its counts through a store that speaks the Redis protocol (Redis, Valkey), set as `shared_limits` in each replica's config:
+- A count's key is the limited rule's id, `on`, `where`, `sum` and `per`, plus the request's limit key (agent and `per` values). It's hashed under the configured prefix, so every replica with the same policy uses the same key.
+- Before deciding, a replica atomically adds the request to every count it falls under, and gets back each count as it was before the request. It decides with those counts. If the decision isn't `allow`, it takes the request back out.
+- Two replicas racing for the last slot may therefore both see it taken and both refuse. They can't both get it. Shared counts can only make a group stricter than one gateway, never looser.
+- A count's entries expire with its window, and the times are the replicas' clocks, so keep them in sync (NTP).
+
+If the store can't be reached, the replica counts locally and marks each such decision `degraded: true` (see Fail mode). Each replica's health reports `shared_limits` as `ok` or the last error.
+
+Approval answers go to the replica that asked. A Kubernetes approval is used when the same request comes back to that replica, but the API server picks a replica at random, so a group behind an admission webhook should have one replica until approvals are shared too.
+
 ## Fail mode
 
 The gateway keeps deciding from its last good bundle when the platform is unreachable, so most requests never notice. The fail mode applies only when the policy can't decide on its own ([decisions.md](../docs/decisions.md), section 4):
@@ -216,7 +230,7 @@ The gateway keeps deciding from its last good bundle when the platform is unreac
 |---|---|
 | No bundle yet (first start, platform unreachable), or no bundle on disk passes verification | Denies every request |
 | `require_approval` and the approval request can't be sent | Uses the matching rule's `on_unavailable` (default `deny`) |
-| Several replicas share a rate window (Phase 7) and the shared store is unreachable | Counts locally and keeps deciding. The event carries `degraded: true` |
+| Replicas share limits (see Replicas) and the shared store is unreachable | Counts locally and keeps deciding. The event carries `degraded: true` |
 | Quarantine | Unaffected: it's in the bundle, or in a command already applied |
 
 A decision made by the fail mode, not the policy, is reported with `degraded: true`.

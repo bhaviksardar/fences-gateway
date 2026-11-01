@@ -5,7 +5,11 @@ metadata:
   name: {{ .Release.Name }}
   labels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
 spec:
-  replicas: 1
+  {{- if and (gt (int .Values.replicas) 1) (not .Values.sharedLimits.urlSecret.name) }}
+  {{- fail "replicas > 1 needs sharedLimits.urlSecret: without it each replica counts limits on its own" }}
+  {{- end }}
+  replicas: {{ .Values.replicas }}
+  podManagementPolicy: Parallel
   serviceName: {{ .Release.Name }}
   selector:
     matchLabels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
@@ -35,6 +39,11 @@ spec:
             - name: FENCES_ENROLL_TOKEN
               valueFrom:
                 secretKeyRef: {name: {{ .Values.enrollToken.secretName }}, key: {{ .Values.enrollToken.key }}, optional: true}
+            {{- end }}
+            {{- if .Values.sharedLimits.urlSecret.name }}
+            - name: FENCES_SHARED_LIMITS_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.sharedLimits.urlSecret.name }}, key: {{ .Values.sharedLimits.urlSecret.key }}}
             {{- end }}
             {{- if and .Values.kubernetes.enabled .Values.kubernetes.auditToken.secretName }}
             - name: FENCES_AUDIT_TOKEN

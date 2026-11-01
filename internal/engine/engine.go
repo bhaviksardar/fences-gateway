@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bhaviksardar/fences-gateway/internal/approvals"
+	"github.com/bhaviksardar/fences-gateway/internal/shared"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
 	"github.com/bhaviksardar/fences-gateway/pkg/decisions"
 	"github.com/bhaviksardar/fences-gateway/pkg/policy"
@@ -33,20 +34,23 @@ type Engine struct {
 	Store        *bundle.Store
 	Queue        *queue.Queue
 	Approvals    *approvals.Manager
-	ReportValues bool // report argument values in events, not just names
+	ReportValues bool          // report argument values in events, not just names
+	Shared       *shared.Store // limits counted with the group's other replicas; nil: here only
 	Version      string
 	Log          *slog.Logger
 
-	mu          gosync.Mutex
-	counts      map[string]*count       // limit counts: rule signature + limit key → what it let through, for limits
-	sigs        map[*policy.Rule]string // the current bundle's limited rules' signatures
-	sigsFor     *bundle.Bundle
-	swept       time.Time
-	quarantined map[string]int64           // agent → the bundle version that takes over from the quarantine command
-	held        map[string]map[*int]func() // agent → cancels for calls waiting on an approval
-	later       map[string]*later          // agent + request_hash → an approval asked for a request that couldn't wait
-	unauthSec   int64
-	unauthN     int
+	mu           gosync.Mutex
+	counts       map[string]*count       // limit counts: rule signature + limit key → what it let through, for limits
+	sigs         map[*policy.Rule]string // the current bundle's limited rules' signatures
+	sigsFor      *bundle.Bundle
+	swept        time.Time
+	sharedErr    string
+	sharedLogged time.Time
+	quarantined  map[string]int64           // agent → the bundle version that takes over from the quarantine command
+	held         map[string]map[*int]func() // agent → cancels for calls waiting on an approval
+	later        map[string]*later          // agent + request_hash → an approval asked for a request that couldn't wait
+	unauthSec    int64
+	unauthN      int
 
 	stats stats
 }
@@ -156,9 +160,7 @@ func (e *Engine) Decide(ctx context.Context, req policy.Request) *Call {
 	agent, _ := req["agent"].(string)
 	b := e.Store.Current()
 
-	e.mu.Lock()
-	d, degraded := e.decideLocked(b, agent, req, false)
-	e.mu.Unlock()
+	d, degraded := e.decide(ctx, b, agent, req, false)
 
 	var approvalID string
 	waited := time.Duration(0)
@@ -182,6 +184,72 @@ func (e *Engine) Decide(ctx context.Context, req policy.Request) *Call {
 	c.ev.LatencyMS = float64(took.Microseconds()) / 1000
 	e.stats.decided(took)
 	return c
+}
+
+// decide decides with the limits counted here, or in the shared store with one (spec/PROTOCOL-GATEWAY.md, Replicas).
+// The store is asked outside the lock: it's atomic itself, and a round trip mustn't hold up every other decision.
+func (e *Engine) decide(ctx context.Context, b *bundle.Bundle, agent string, req policy.Request, approved bool) (policy.Decision, bool) {
+	e.mu.Lock()
+	if e.Shared == nil || b == nil {
+		defer e.mu.Unlock()
+		return e.decideLocked(b, agent, req, approved)
+	}
+	if v, ok := e.quarantined[agent]; ok && b.Version < v {
+		e.mu.Unlock()
+		return policy.Decision{Decision: policy.Deny, Reason: agent + " is quarantined"}, false
+	}
+	var limits []shared.Limit
+	var rules []*policy.Rule
+	for r, sig := range e.signatures(b) {
+		if r.CountsToward(req) {
+			amount := 0.0
+			if r.Limit.Sum != "" {
+				amount, _ = r.Amount(req)
+			}
+			limits = append(limits, shared.Limit{Key: sig + "\x00" + r.LimitKey(req), WindowS: r.Limit.WindowS, Amount: amount})
+			rules = append(rules, r)
+		}
+	}
+	e.mu.Unlock()
+	if len(limits) == 0 { // nothing to count
+		return b.Policy.DecideCounts(req, func(*policy.Rule, policy.Request) (int, float64) { return 0, 0 }, approved), false
+	}
+	at, _ := req["at"].(float64)
+	member, counts, err := e.Shared.Reserve(ctx, at, limits)
+	e.sharedResult(err)
+	if err != nil { // the store is unreachable: count here, and say the decision was made by the fail mode
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		d, _ := e.decideLocked(b, agent, req, approved)
+		return d, true
+	}
+	d := b.Policy.DecideCounts(req, func(r *policy.Rule, _ policy.Request) (int, float64) {
+		for i := range rules {
+			if rules[i] == r {
+				return counts[i].N, counts[i].Total
+			}
+		}
+		return 0, 0
+	}, approved)
+	if d.Decision != policy.Allow { // only allowed requests count; one left in by a failed release only makes it stricter
+		e.sharedResult(e.Shared.Release(context.WithoutCancel(ctx), member, limits))
+	}
+	return d, false
+}
+
+// sharedResult keeps the shared store's state for health, and logs a failure at most once a minute.
+func (e *Engine) sharedResult(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err == nil {
+		e.sharedErr = ""
+		return
+	}
+	e.sharedErr = err.Error()
+	if time.Since(e.sharedLogged) > time.Minute {
+		e.sharedLogged = time.Now()
+		e.log().Warn("fences: shared limits unreachable; counting locally (degraded)", "err", err)
+	}
 }
 
 // decideLocked decides and, if allowed, reserves the request in the history straight away, so two racing requests
@@ -328,9 +396,7 @@ func (e *Engine) approve(ctx context.Context, b *bundle.Bundle, agent string, re
 		}
 		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: reason}, false, id
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	d, deg := e.decideLocked(e.Store.Current(), agent, req, true)
+	d, deg := e.decide(ctx, e.Store.Current(), agent, req, true)
 	return d, degraded || deg, id
 }
 
@@ -377,8 +443,8 @@ func (e *Engine) approveLater(ctx context.Context, b *bundle.Bundle, agent strin
 	switch a := e.later[key]; {
 	case a != nil && a.granted && time.Since(a.at) <= GrantTTL:
 		delete(e.later, key)
-		d, degraded := e.decideLocked(e.Store.Current(), agent, req, true)
 		e.mu.Unlock()
+		d, degraded := e.decide(ctx, e.Store.Current(), agent, req, true)
 		return d, degraded, a.id
 	case a != nil && !a.answered:
 		e.mu.Unlock()
@@ -408,9 +474,7 @@ func (e *Engine) approveLater(ctx context.Context, b *bundle.Bundle, agent strin
 		if denied, ok := e.unavailable(b, d, err); !ok {
 			return denied, true, id
 		}
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		d, _ := e.decideLocked(e.Store.Current(), agent, req, true)
+		d, _ := e.decide(ctx, e.Store.Current(), agent, req, true)
 		return d, true, id
 	}
 	e.mu.Lock()
@@ -592,10 +656,19 @@ func noRepeats(dec *json.Decoder) error {
 // Health is the health object for sync (spec/PROTOCOL-GATEWAY.md, Sync).
 func (e *Engine) Health() map[string]any {
 	perS, p99, upstreamErrors, uptime := e.stats.read()
-	return map[string]any{
+	h := map[string]any{
 		"version": e.Version, "uptime_s": math.Round(uptime.Seconds()), "queue_depth": e.Queue.Depth(),
 		"dropped_events": e.Queue.Dropped(), "decisions_per_s": perS, "p99_added_ms": p99, "upstream_errors": upstreamErrors,
 	}
+	if e.Shared != nil {
+		e.mu.Lock()
+		h["shared_limits"] = "ok"
+		if e.sharedErr != "" {
+			h["shared_limits"] = e.sharedErr
+		}
+		e.mu.Unlock()
+	}
+	return h
 }
 
 // stats are the gateway's metrics: decisions per second, added latency, upstream errors.
