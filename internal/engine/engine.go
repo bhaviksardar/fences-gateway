@@ -38,7 +38,10 @@ type Engine struct {
 	Log          *slog.Logger
 
 	mu          gosync.Mutex
-	history     []policy.Request           // allowed requests, oldest first, for limits
+	counts      map[string]*count       // limit counts: rule signature + limit key → what it let through, for limits
+	sigs        map[*policy.Rule]string // the current bundle's limited rules' signatures
+	sigsFor     *bundle.Bundle
+	swept       time.Time
 	quarantined map[string]int64           // agent → the bundle version that takes over from the quarantine command
 	held        map[string]map[*int]func() // agent → cancels for calls waiting on an approval
 	later       map[string]*later          // agent + request_hash → an approval asked for a request that couldn't wait
@@ -190,32 +193,104 @@ func (e *Engine) decideLocked(b *bundle.Bundle, agent string, req policy.Request
 	if v, ok := e.quarantined[agent]; ok && b.Version < v {
 		return policy.Decision{Decision: policy.Deny, Reason: agent + " is quarantined"}, false
 	}
-	d := b.Policy.Decide(req, e.history, approved)
+	d := b.Policy.DecideCounts(req, e.count(b), approved)
 	if d.Decision == policy.Allow {
 		e.reserve(b, req)
 	}
 	return d, false
 }
 
+// count is what one limit let through for one key: allowed requests' times and amounts, oldest first.
+type count struct {
+	at, amount []float64
+	total      float64
+}
+
+// expire drops what fell out of the window ending at now.
+func (c *count) expire(now, window float64) {
+	i := 0
+	for i < len(c.at) && c.at[i] <= now-window {
+		c.total -= c.amount[i]
+		i++
+	}
+	c.at, c.amount = c.at[i:], c.amount[i:]
+	if len(c.at) == 0 {
+		c.total = 0 // no drift carried into the next requests
+	}
+}
+
+// signatures names each limited rule by what decides which requests it counts: its id, subject, conditions, sum and
+// per. A bundle that changes those starts that limit's count afresh; one that changes only max or window_s doesn't.
+// ponytail: the spec counts every allowed request against a changed rule; counting from the change is what an engine
+// can do without keeping every request (spec/rules/README.md, Limits)
+func (e *Engine) signatures(b *bundle.Bundle) map[*policy.Rule]string {
+	if e.sigsFor != b {
+		e.sigs, e.sigsFor = map[*policy.Rule]string{}, b
+		live := map[string]bool{}
+		for i := range b.Policy.Rules {
+			if r := &b.Policy.Rules[i]; r.Limit != nil {
+				sig, _ := json.Marshal([]any{r.ID, r.On, r.Where, r.Limit.Sum, r.Limit.Per})
+				e.sigs[r] = string(sig)
+				live[string(sig)] = true
+			}
+		}
+		for k := range e.counts { // counts of rules that are gone
+			if !live[k[:strings.IndexByte(k, 0)]] {
+				delete(e.counts, k)
+			}
+		}
+	}
+	return e.sigs
+}
+
+func (e *Engine) count(b *bundle.Bundle) policy.Counts {
+	sigs := e.signatures(b)
+	return func(r *policy.Rule, req policy.Request) (int, float64) {
+		c := e.counts[sigs[r]+"\x00"+r.LimitKey(req)]
+		if c == nil {
+			return 0, 0
+		}
+		now, _ := req["at"].(float64)
+		c.expire(now, r.Limit.WindowS)
+		return len(c.at), c.total
+	}
+}
+
+// reserve counts an allowed request against every limit it falls under.
+// ponytail: in memory and per replica, so limits are per replica and restart from zero; 16 bytes a counted request
 func (e *Engine) reserve(b *bundle.Bundle, req policy.Request) {
-	// ponytail: in memory and per replica, so limits are per replica and restart from zero; Phase 7 shares them
-	var window float64
-	for _, r := range b.Policy.Rules {
-		if r.Limit != nil {
-			window = max(window, r.Limit.WindowS)
-		}
-	}
+	sigs := e.signatures(b)
 	at, _ := req["at"].(float64)
-	drop := 0
-	for drop < len(e.history) {
-		if hAt, _ := e.history[drop]["at"].(float64); hAt > at-window {
-			break
-		}
-		drop++
+	if e.counts == nil {
+		e.counts = map[string]*count{}
 	}
-	e.history = e.history[drop:]
-	if window > 0 {
-		e.history = append(e.history, req)
+	for r, sig := range sigs {
+		if !r.CountsToward(req) {
+			continue
+		}
+		key := sig + "\x00" + r.LimitKey(req)
+		c := e.counts[key]
+		if c == nil {
+			c = &count{}
+			e.counts[key] = c
+		}
+		amount := 0.0
+		if r.Limit.Sum != "" {
+			amount, _ = r.Amount(req)
+		}
+		c.at, c.amount, c.total = append(c.at, at), append(c.amount, amount), c.total+amount
+	}
+	if time.Since(e.swept) > time.Minute { // keys nobody asks about again would otherwise keep their entries
+		e.swept = time.Now()
+		windows := map[string]float64{}
+		for r, sig := range sigs {
+			windows[sig] = r.Limit.WindowS
+		}
+		for k, c := range e.counts {
+			if c.expire(at, windows[k[:strings.IndexByte(k, 0)]]); len(c.at) == 0 {
+				delete(e.counts, k)
+			}
+		}
 	}
 }
 

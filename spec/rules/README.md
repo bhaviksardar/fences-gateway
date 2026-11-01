@@ -102,6 +102,8 @@ On an `allow` or `approve` rule. It caps what that rule lets through, per agent:
 
 **History** is the requests the gateway already let through (decision `allow`), with their `at`. A request counts against a rule's limit if it was from the same agent, of the rule's `on`, matches the rule's `where`, has the same `per` values, and is in the window: `at > now − window_s`. The request being decided counts too: it is over the limit if `count + 1 > max`, or `total + amount > max` with `sum`.
 
+An engine may keep running counts instead of every request it let through. Then, when a new policy changes a limited rule's `on`, `where`, `sum` or `per`, that rule counts only the requests let through after the change. Changing only `max` or `window_s` keeps the count. Requests that already left the window stay out even if `window_s` grows.
+
 The gateway reserves before forwarding: once a request is allowed, it's in the history straight away, so two racing requests can't both take the last slot.
 
 ## Deciding

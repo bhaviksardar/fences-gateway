@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -287,6 +286,38 @@ func (w *Window) contains(at float64) bool {
 // Decide applies the policy to req (spec/rules/README.md, Deciding). history is the requests already allowed, which
 // limits count against; approved says whether req has a granted approval.
 func (p *Policy) Decide(req Request, history []Request, approved bool) Decision {
+	return p.DecideCounts(req, HistoryCounts(history), approved)
+}
+
+// Counts says, for a limited rule r and the request being decided, how many requests already allowed count against
+// r's limit (same agent, r's on and where, the same per values, in the window) and the total of their sum field.
+type Counts func(r *Rule, req Request) (count int, total float64)
+
+// HistoryCounts counts from every allowed request, as the spec describes. An engine that decides a lot can keep
+// running counts instead (Rule.CountsToward, Rule.LimitKey, Rule.Amount) and hand them to DecideCounts.
+func HistoryCounts(history []Request) Counts {
+	return func(r *Rule, req Request) (int, float64) {
+		l := r.Limit
+		now, _ := number(req["at"])
+		key := r.LimitKey(req)
+		count, total := 0, 0.0
+		for _, h := range history {
+			hAt, ok := number(h["at"])
+			if !ok || hAt <= now-l.WindowS || !r.CountsToward(h) || r.LimitKey(h) != key {
+				continue
+			}
+			count++
+			if l.Sum != "" {
+				n, _ := number(lookup(h, l.Sum))
+				total += n
+			}
+		}
+		return count, total
+	}
+}
+
+// DecideCounts is Decide with the limits' counts from counts.
+func (p *Policy) DecideCounts(req Request, counts Counts, approved bool) Decision {
 	agent, _ := req["agent"].(string)
 	if slices.Contains(p.Quarantined, agent) {
 		return Decision{Decision: Deny, Reason: agent + " is quarantined"}
@@ -307,7 +338,7 @@ func (p *Policy) Decide(req Request, history []Request, approved bool) Decision 
 		passing = append(passing, r)
 	}
 	for _, r := range passing {
-		if r.Limit != nil && r.overLimit(req, history) {
+		if r.Limit != nil && r.overLimit(req, counts) {
 			return out(RateLimited, r)
 		}
 	}
@@ -424,40 +455,41 @@ func (c *Condition) holds(req Request) bool {
 	return isStr && slices.Contains(c.list, s) // in
 }
 
-func (r *Rule) overLimit(req Request, history []Request) bool {
+func (r *Rule) overLimit(req Request, counts Counts) bool {
 	l := r.Limit
-	agent, _ := req["agent"].(string)
-	now, _ := number(req["at"])
-	key := make([]any, len(l.Per))
-	for i, f := range l.Per {
-		key[i] = lookup(req, f)
-	}
-	count, total := 0, 0.0
-	for _, h := range history {
-		hAt, ok := number(h["at"])
-		hAgent, _ := h["agent"].(string)
-		hOn, _ := h["on"].(string)
-		if !ok || hAgent != agent || hOn != r.On || hAt <= now-l.WindowS || !r.where(h) {
-			continue
-		}
-		same := true
-		for i, f := range l.Per {
-			same = same && reflect.DeepEqual(lookup(h, f), key[i])
-		}
-		if !same {
-			continue
-		}
-		count++
-		if l.Sum != "" {
-			n, _ := number(lookup(h, l.Sum))
-			total += n
-		}
-	}
+	count, total := counts(r, req)
 	if l.Sum == "" {
 		return float64(count+1) > *l.Max
 	}
-	amount, ok := number(lookup(req, l.Sum))
+	amount, ok := r.Amount(req)
 	return !ok || total+amount > *l.Max // an amount that can't be checked is over the limit
+}
+
+// CountsToward says whether req, once allowed, counts against r's limit: it is of r's subject and meets r's where.
+// Which count it joins is LimitKey's; the window is the caller's to apply, by "at".
+func (r *Rule) CountsToward(req Request) bool {
+	on, _ := req["on"].(string)
+	return r.Limit != nil && on == r.On && r.where(req)
+}
+
+// LimitKey is the count req belongs to under r's limit: its agent and its per values. Requests with the same key
+// count together.
+func (r *Rule) LimitKey(req Request) string {
+	key := []any{req["agent"]}
+	for _, f := range r.Limit.Per {
+		v := lookup(req, f)
+		if v == missing {
+			v = map[string]bool{"\x00missing": true} // can't be confused with a value from JSON
+		}
+		key = append(key, v)
+	}
+	b, _ := json.Marshal(key)
+	return string(b)
+}
+
+// Amount is req's value for r's limit sum, if it is a number.
+func (r *Rule) Amount(req Request) (float64, bool) {
+	return number(lookup(req, r.Limit.Sum))
 }
 
 func lookup(req Request, path string) any {

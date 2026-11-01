@@ -4,7 +4,8 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
-Nothing yet.
+- `pkg/policy` **(edge)**: `DecideCounts` decides with limit counts the caller keeps. `Counts`, `HistoryCounts`, `Rule.CountsToward`, `Rule.LimitKey` and `Rule.Amount` are added. `Decide` is unchanged. `spec/rules/README.md` allows an engine that keeps counts to count a changed rule from the change.
+- `internal/engine` keeps running counts per limit instead of every allowed request. A decision with an hour-long limit at 1,000 requests a second went from a full scan of the history under the lock, which collapsed in about 30 seconds, to 0.024 ms p99. It holds 16 bytes per counted request. `docs/load-test.md` has the numbers.
 
 ## 0.1.0 (2026-10-31)
 
