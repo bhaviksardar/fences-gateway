@@ -18,7 +18,7 @@ The SDK's protocol is a separate file, [PROTOCOL.md](PROTOCOL.md). This one reus
 | Response | What the gateway does |
 |---|---|
 | 2xx with JSON | Uses the body |
-| 401 | Its key was revoked or never enrolled. It keeps enforcing the last good bundle, stops syncing, and logs an error every minute. It never fails open because of this. |
+| 401 | Its key was revoked or never enrolled, or its clock is more than 300 seconds off. It keeps enforcing the last good bundle, tries again once a minute and logs an error each time, so a corrected clock recovers without a restart. It never fails open because of this. |
 | 403 | The request named an agent this gateway doesn't serve. It drops that request and logs it. |
 | Any other 4xx (400, 413, 422) | The platform will never accept this request as it is. A batch of events is dropped and logged, so it can't hold up the queue behind it. Other requests count as failed. |
 | 409 | A repeat the platform already has. Treated as success. |
@@ -39,7 +39,7 @@ Sent once, at first start. The gateway creates an Ed25519 key pair and keeps the
 
 **Response:**
 ```json
-{"gateway_id": "gw_8f2c...", "signing_keys": [{"key_id": "k1", "public_key": "<base64>"}], "sync_interval_s": 15}
+{"gateway_id": "gw_8f2c...", "signing_keys": [{"key_id": "k1", "public_key": "<base64>"}], "sync_interval_s": 2}
 ```
 
 `signing_keys` are the platform's public keys for verifying bundles. A gateway configured with `pinned_signing_keys` uses only those and ignores the list here, so a platform that swaps keys can't push a bundle (threat model, [decisions.md](../docs/decisions.md)).
@@ -62,7 +62,7 @@ The platform rejects a request with `401` if its timestamp is more than 300 seco
 
 ## Sync: `POST /api/gateways/sync`
 
-This is the gateway's heartbeat and bundle pull in one request. It's sent every `sync_interval_s` (default 15 s) with ±20% jitter, and every 2 s while an approval is pending.
+This is the gateway's heartbeat and bundle pull in one request. It's sent every `sync_interval_s` (default 2 s, so a quarantine reaches the gateway within about 2 seconds) with ±20% jitter, and every 2 s while an approval is pending.
 
 ```json
 {"bundle_version": 41,

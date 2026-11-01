@@ -170,8 +170,8 @@ func TestSync(t *testing.T) {
 		t.Fatalf("sync request: %v", last)
 	}
 
-	// Failures back off, and a revoked key stops the loop from syncing
-	firstBackoff, openCircuit, revokedLog = time.Millisecond, 5*time.Millisecond, time.Hour
+	// Failures back off; a refused key (401) is retried at the slow pace, and recovers once accepted again
+	firstBackoff, openCircuit, revokedLog = time.Millisecond, 5*time.Millisecond, 20*time.Millisecond
 	p.mu.Lock()
 	p.syncFails = 3
 	n := len(p.syncs)
@@ -192,7 +192,18 @@ func TestSync(t *testing.T) {
 	s.Wake()
 	time.Sleep(50 * time.Millisecond)
 	if store.Current().Version != 7 {
-		t.Error("a revoked key must keep the last good bundle")
+		t.Error("a refused key must keep the last good bundle")
+	}
+	p.mu.Lock()
+	refusedAt := len(p.syncs)
+	p.status = 0 // the clock was fixed, or the key restored
+	p.mu.Unlock()
+	time.Sleep(80 * time.Millisecond)
+	p.mu.Lock()
+	resumed := len(p.syncs) > refusedAt
+	p.mu.Unlock()
+	if !resumed {
+		t.Error("syncing must resume once the platform accepts the key again")
 	}
 }
 

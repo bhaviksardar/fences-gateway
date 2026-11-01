@@ -112,8 +112,9 @@ func (s *Syncer) Wake() {
 	}
 }
 
-// Run syncs until ctx ends. If the platform revokes this client's key it stops syncing and logs an error every
-// minute; the store keeps enforcing the last good bundle either way.
+// Run syncs until ctx ends. If the platform refuses this client's key (401: revoked, or a clock more than 5 minutes
+// off) it retries once a minute and logs an error each time, so a fixed clock recovers without a restart; the store
+// keeps enforcing the last good bundle either way.
 func (s *Syncer) Run(ctx context.Context) {
 	s.init()
 	failures := 0
@@ -122,8 +123,9 @@ func (s *Syncer) Run(ctx context.Context) {
 		var wait time.Duration
 		switch {
 		case errors.Is(err, ErrRevoked):
-			s.revoked(ctx)
-			return
+			failures = 0
+			wait = revokedLog
+			s.Log.Error("fences: the platform refused this client's key (revoked, or this clock is off); enforcing the last good bundle, retrying in a minute")
 		case err != nil:
 			failures++
 			wait = backoff(failures)
@@ -147,20 +149,9 @@ func (s *Syncer) interval() time.Duration {
 	}
 	every := s.Client.ID.SyncIntervalS
 	if every <= 0 {
-		every = 15
+		every = 2
 	}
 	return time.Duration(every * (0.8 + 0.4*rand.Float64()) * float64(time.Second)) // ±20%
-}
-
-func (s *Syncer) revoked(ctx context.Context) {
-	for {
-		s.Log.Error("fences: the platform refused this client's key; enforcing the last good bundle, not syncing")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(revokedLog):
-		}
-	}
 }
 
 // Once runs one sync: it sends acks and health, applies a newer bundle and the commands in the reply.
@@ -234,11 +225,14 @@ func Ship(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) {
 		log = slog.Default()
 	}
 	failures := 0
+	refused := false // 401: the Syncer logs it; events stay queued and are tried again in a minute
 	last := time.Now()
 	for {
 		// ponytail: polls the queue depth every 100 ms; a channel from Push if that ever shows up in a profile
 		wait := 100 * time.Millisecond
-		if failures > 0 {
+		if refused {
+			wait = revokedLog
+		} else if failures > 0 {
 			wait = backoff(failures)
 		}
 		select {
@@ -250,10 +244,11 @@ func Ship(ctx context.Context, c *Client, q *queue.Queue, log *slog.Logger) {
 			continue
 		}
 		last = time.Now()
-		if err := shipOnce(ctx, c, q, log); err != nil {
-			if errors.Is(err, ErrRevoked) {
-				return // Syncer logs it; events stay queued
-			}
+		err := shipOnce(ctx, c, q, log)
+		if refused = errors.Is(err, ErrRevoked); refused {
+			continue
+		}
+		if err != nil {
 			failures++
 			log.Warn("fences: sending decision events failed", "err", err, "failures", failures)
 			continue
