@@ -511,11 +511,13 @@ func lookup(req Request, path string) any {
 	return v
 }
 
+// foldedKey is the one value whose key equals part ignoring case. strings.EqualFold folds as Fold does, without
+// building strings: this runs for every missing field, over objects the agent sizes.
 func foldedKey(m map[string]any, part string) (any, bool) {
-	want, found := Fold(part), 0
+	found := 0
 	var v any
 	for k, x := range m {
-		if Fold(k) == want {
+		if strings.EqualFold(k, part) {
 			v, found = x, found+1
 		}
 	}

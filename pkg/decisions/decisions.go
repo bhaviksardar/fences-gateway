@@ -112,13 +112,15 @@ func Summary(req policy.Request) string {
 		return head + s
 	}
 	keys := slices.Sorted(maps.Keys(args))
-	each := max((maxApproval-200)/max(len(keys), 1), 48)
 	note := func(n int) string { return fmt.Sprintf(" (%d more arguments not shown)", n) }
 	budget := maxApproval - len([]rune(head)) - len([]rune(note(len(keys)))) - 2
+	// Each argument's share of what's left, most of it for the value: "key":"value", plus a comma
+	each := max(budget/len(keys)-6, 48)
+	keyCap := min(each/4, 100)
 	var parts []string
 	used := 0
 	for _, k := range keys {
-		entry := escape(marshal(map[string]string{middle(k, each): middle(text(args[k]), each)}))
+		entry := escape(marshal(map[string]string{middle(k, keyCap): middle(text(args[k]), each-keyCap)}))
 		entry = entry[1 : len(entry)-1] // "k":"v"
 		if n := len([]rune(entry)) + 1; used+n > budget {
 			break
