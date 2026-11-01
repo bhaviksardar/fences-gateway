@@ -55,6 +55,10 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req["agent"] = agent
+	if r.Header.Get("Upgrade") != "" { // a WebSocket (or other upgraded) connection would carry requests nobody decides
+		fail(w, http.StatusBadRequest, "protocol upgrades aren't proxied")
+		return
+	}
 
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	query := map[string]any{}

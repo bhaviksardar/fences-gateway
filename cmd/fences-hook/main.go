@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -74,7 +75,10 @@ func decide(in []byte, getenv func(string) string) string {
 		}
 	}
 	body, _ := json.Marshal(map[string]any{"tool": hook.ToolName, "args": args})
-	req, _ := http.NewRequest("POST", base+"/hook/"+name, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", base+"/hook/"+url.PathEscape(name), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("Fences isn't set up right (FENCES_GATEWAY_URL: %v): blocked.", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)

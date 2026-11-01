@@ -86,6 +86,10 @@ func TestHook(t *testing.T) {
 	if got := ask("Bash", map[string]any{"command": "ls"}); !strings.Contains(got, "couldn't be asked") {
 		t.Errorf("gateway down: %q", got)
 	}
+	vars["FENCES_GATEWAY_URL"] = "http://bad host"
+	if got := ask("Bash", map[string]any{"command": "ls"}); !strings.Contains(got, "isn't set up right") {
+		t.Errorf("a malformed URL must block, not crash: %q", got)
+	}
 	if got := decide([]byte("not json"), func(string) string { return "" }); got == "" {
 		t.Error("bad input must block")
 	}

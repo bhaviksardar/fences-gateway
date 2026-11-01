@@ -155,6 +155,9 @@ func TestRefunds(t *testing.T) {
 			t.Errorf("%s %s: %d %s, want %d", c.method, c.path, code, body, c.want)
 		}
 	}
+	if code, _ := send("GET", "/http/refunds/ws", "", "tok-bot", "Connection", "Upgrade", "Upgrade", "websocket"); code != 400 {
+		t.Errorf("an upgrade would tunnel undecided requests: %d", code)
+	}
 	if len(got) != 3 {
 		t.Errorf("the API saw %d requests, want 3", len(got))
 	}

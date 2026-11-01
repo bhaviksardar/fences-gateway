@@ -34,4 +34,6 @@ An amount is reserved when the request is allowed, before it's forwarded, so two
 - **Only a JSON object body is read**, whatever its Content-Type says. A form or other body has no `body` fields. A rule that sums `body.amount` counts such a request as over its limit, so a cap can't be bypassed by sending the amount in another format.
 - A body that repeats a key, or a query string that repeats a parameter, is refused: the API might read a different copy from the one the policy decided on.
 - The path is decoded before it's decided, and forwarded re-encoded, so the API acts on the path that was decided.
+- **Prefer `default: deny` with `allow` rules.** The path is compared exactly, but an API may treat `/refunds/`, `/Refunds` or `/refunds;x` as `/refunds`. A `deny` rule on `/refunds` doesn't match those variants, while under `default: deny` they're refused because nothing allows them.
+- Protocol upgrades (WebSocket) are refused: requests sent over the upgraded connection couldn't be decided.
 - Bodies are at most 4 MB, and a request (response included) at most 2 minutes.

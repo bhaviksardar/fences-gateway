@@ -95,7 +95,7 @@ When a rule blocks a call, Claude sees `Fences: deny: Pushing to main is blocked
 
 ## Limits
 
-- **Command rules are pattern matches, not a sandbox.** They stop the mistakes you name. `git push` with no arguments while on `main`, `rm -r -f`, or a script that does the same thing won't match. Use them as guardrails alongside Claude Code's own permissions.
+- **Command rules are pattern matches, not a sandbox.** They can block too much as well as too little: `*git push*main*` also blocks `git push origin maintenance-fix`. They stop the mistakes you name. `git push` with no arguments while on `main`, `rm -r -f`, or a script that does the same thing won't match. Use them as guardrails alongside Claude Code's own permissions.
 - **Paths are compared as text.** A symlink inside the project that points outside it counts as inside.
 - **The hook is only as fixed as the settings file.** Claude could edit `~/.claude/settings.json` through a shell command. For developers who mustn't turn it off, deploy the hook in Claude Code's managed settings, which users can't override.
 - A file of more than 4 MB written in one call is refused by the gateway, so the hook blocks it.
