@@ -41,11 +41,25 @@ def validate(policy: dict) -> None:
                 raise PolicyError(f"{r['id']}: unknown op {c.get('op')!r}")
 
 
+def fold(s: str) -> str:
+    """Unicode simple case folding, as Go's unicode.SimpleFold orbit: each character as the smallest it folds with."""
+    out = []
+    for ch in s:
+        orbit = {ch, ch.lower(), ch.upper()} | {c for c in (ch.lower().upper(), ch.upper().lower()) if len(c) == 1}
+        out.append(min((c for c in orbit if len(c) == 1), key=ord))
+    return "".join(out)
+
+
 def lookup(request: dict, path: str):
     v = request
     for part in path.split("."):
-        if not isinstance(v, dict) or part not in v:
+        if not isinstance(v, dict):
             return MISSING
+        if part not in v:  # no exact key: the one equal ignoring case (a gateway refuses objects with two)
+            same = [k for k in v if fold(k) == fold(part)]
+            if len(same) != 1:
+                return MISSING
+            part = same[0]
         v = v[part]
     return v
 

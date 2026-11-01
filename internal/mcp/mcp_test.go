@@ -297,3 +297,28 @@ func TestApprovalPlatformDown(t *testing.T) {
 		t.Errorf("a fail-mode decision is reported degraded: %v", ev)
 	}
 }
+
+// An agent can't open sessions without end: each holds memory until it's idle for SessionIdle.
+func TestNewSessionCap(t *testing.T) {
+	h := setup(t)
+	init := `{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "x", "version": "1"}}}`
+	if sec := time.Now().Unix() % 60; sec >= 58 { // the count starts again each minute: don't straddle one
+		time.Sleep(time.Duration(61-sec) * time.Second)
+	}
+	codes := map[int]int{}
+	for range NewSessionsPerMinute + 5 {
+		req, _ := http.NewRequest("POST", h.gw+"/mcp/crm", strings.NewReader(init))
+		req.Header.Set("Authorization", "Bearer tok-bot")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		codes[resp.StatusCode]++
+	}
+	if codes[200] != NewSessionsPerMinute || codes[429] != 5 {
+		t.Errorf("new sessions: %v", codes)
+	}
+}

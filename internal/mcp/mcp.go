@@ -32,6 +32,13 @@ var (
 	MaxResponse = int64(16 << 20)
 )
 
+// Agents' MCP sessions: closed after SessionIdle without a request, and at most NewSessionsPerMinute opened per agent
+// (a request without Mcp-Session-Id opens one), so sessions can't fill the gateway's memory.
+var (
+	SessionIdle          = 10 * time.Minute
+	NewSessionsPerMinute = 60
+)
+
 // Gateway serves the MCP surface.
 type Gateway struct {
 	Engine    *engine.Engine
@@ -39,6 +46,20 @@ type Gateway struct {
 
 	mu       gosync.Mutex
 	sessions map[string]*sdk.ClientSession // upstream name → the gateway's own session to it
+	openedMu gosync.Mutex                  // not mu: that's held while connecting to an upstream
+	opened   map[string]int                // agent → sessions it opened this minute
+	minute   int64
+}
+
+// newSession counts a session an agent opens, and says whether it's within NewSessionsPerMinute.
+func (g *Gateway) newSession(agent string) bool {
+	g.openedMu.Lock()
+	defer g.openedMu.Unlock()
+	if m := time.Now().Unix() / 60; m != g.minute || g.opened == nil {
+		g.minute, g.opened = m, map[string]int{}
+	}
+	g.opened[agent]++
+	return g.opened[agent] <= NewSessionsPerMinute
 }
 
 // Handler serves /mcp/{upstream} for every configured upstream.
@@ -48,7 +69,8 @@ func (g *Gateway) Handler() http.Handler {
 		srv := sdk.NewServer(&sdk.Implementation{Name: "fences-gateway/" + name, Version: g.Engine.Version},
 			&sdk.ServerOptions{Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}}})
 		srv.AddReceivingMiddleware(g.middleware(name))
-		h := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil)
+		h := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv },
+			&sdk.StreamableHTTPOptions{SessionTimeout: SessionIdle}) // an agent's sessions mustn't pile up in memory
 		mux.Handle("/mcp/"+name, g.authenticate(name, h))
 	}
 	return mux
@@ -58,7 +80,11 @@ func (g *Gateway) Handler() http.Handler {
 // MCP session exists. The agent is found again on every request: a session id is never proof of who's calling.
 func (g *Gateway) authenticate(upstream string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, ok := g.agent(r.Header, upstream) // a quarantined agent gets through: each of its calls is denied and recorded
+		agent, ok := g.agent(r.Header, upstream) // a quarantined agent gets through: each of its calls is denied and recorded
+		if ok && r.Header.Get("Mcp-Session-Id") == "" && !g.newSession(agent) {
+			http.Error(w, "too many new MCP sessions: reuse one", http.StatusTooManyRequests)
+			return
+		}
 		if !ok {
 			g.Engine.Unauthenticated(policy.Request{"on": "mcp", "at": now(), "server": upstream, "tool": ""})
 			w.Header().Set("WWW-Authenticate", `Bearer realm="fences"`)

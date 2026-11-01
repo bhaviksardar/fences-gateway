@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata" // time windows work in images without a zoneinfo database
+	"unicode"
+	"unicode/utf8"
 )
 
 // Decisions, as reported in Decision.Decision.
@@ -157,7 +159,7 @@ func (r *Rule) compile() error {
 	if r.OnUnavailable != "" && r.OnUnavailable != Allow && r.OnUnavailable != Deny {
 		return fmt.Errorf("bad on_unavailable %q", r.OnUnavailable)
 	}
-	if len(r.Reason) > 500 {
+	if utf8.RuneCountInString(r.Reason) > 500 { // characters, as the schema and the platform count them
 		return fmt.Errorf("reason over 500 characters")
 	}
 	for i := range r.Where {
@@ -499,11 +501,38 @@ func lookup(req Request, path string) any {
 		if !ok {
 			return missing
 		}
-		if v, ok = m[part]; !ok {
-			return missing
+		if v, ok = m[part]; !ok { // no exact key: the one equal ignoring case, for APIs that read keys that way
+			v, ok = foldedKey(m, part)
+			if !ok {
+				return missing
+			}
 		}
 	}
 	return v
+}
+
+func foldedKey(m map[string]any, part string) (any, bool) {
+	want, found := Fold(part), 0
+	var v any
+	for k, x := range m {
+		if Fold(k) == want {
+			v, found = x, found+1
+		}
+	}
+	return v, found == 1
+}
+
+// Fold is s with each character replaced by the smallest it folds with (Unicode simple case folding): two keys fold
+// to the same string exactly when a case-insensitive decoder takes them for one. K, k and the Kelvin sign all fold
+// to K.
+func Fold(s string) string {
+	return strings.Map(func(r rune) rune {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		return least
+	}, s)
 }
 
 // number is a JSON number, or a string that is a plain decimal, so "1000" can't dodge `amount gt 100`.

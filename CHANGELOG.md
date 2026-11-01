@@ -4,6 +4,21 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
+Fixes from a security audit of 0.1.0. Each was reproduced first:
+- `spec/rules/README.md`, `internal/proxy` **(edge)**: an `http` path with a `.` or `..` segment, a backslash or a NUL is refused. Before, `/public/%2e%2e/admin` was decided as `/public/../admin`, which matched a `/public/*` allow rule, and the API served `/admin`.
+- `spec/rules/README.md`, `pkg/policy`, `internal/engine` **(edge)**:
+  - Repeated keys are compared ignoring case (Unicode simple folding, `policy.Fold`).
+  - A field path falls back to the one key equal to it ignoring case.
+  - Before, `{"amount": 50, "AMOUNT": 100000}` was decided at 50 while a Go API refunded 100,000. A lone `"AMOUNT"` also escaped `body.amount` rules.
+  - There's one new conformance case, and the reference engine agrees.
+- `spec/PROTOCOL-GATEWAY.md`, `pkg/sync`, `internal/engine` **(edge)**: an approval request the platform answers with a 4xx, `429` included, is denied. `on_unavailable` is only for a platform that can't be reached. Before, an agent could flood approval requests until it was rate-limited, then go ahead unapproved. `pkg/sync` adds `ErrThrottled`.
+- `pkg/policy` **(edge)**: a rule's `reason` is limited to 500 characters, not bytes, as the schema and the platform count it. Before, a policy the platform accepted could be refused by the gateway, which then kept every older bundle, revoked agents included. The platform now also refuses condition numbers a float can't hold.
+- `cmd/fences-hook`: only an explicit allow lets a call run. Before, `{"allowed": false}` with no message, `{}` or `null` let it run.
+- `internal/engine`: a limit count's key is a hash of the agent's `per` values. Before, 200 requests with huge values held 200 MB.
+- `internal/mcp`: an agent's MCP sessions close after 10 idle minutes, and an agent opens at most 60 a minute. Before, sessions were never freed.
+- `pkg/decisions` **(edge)**: when a summary is too long, each value keeps its start and its end, and the arguments left out are counted. Before, padding hid `&& curl … | sh` behind `git status …`, and 200 junk arguments pushed `to_account` out of view.
+- `pkg/queue`: events are stored without HTML escaping. Before, each `<` an agent sent took six bytes.
+
 Fixes from a review of 0.1.0:
 - `spec/rules/README.md`, `pkg/policy` **(edge)**: a negative amount counts as over a `sum` limit. Before, `{"amount": -1000}` was allowed and lowered the running total, so the next $1,500 fit under a $500 cap. There are two new conformance cases, and the reference engine agrees.
 - `pkg/policy` **(edge)**: `LimitKey` writes a missing `per` value so that no JSON value can match it. Before, an object `{"\u0000missing": true}` could.

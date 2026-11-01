@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -97,5 +98,19 @@ func TestBatchBytes(t *testing.T) {
 	q.Ack(99) // the batches above returned seqs 1-3, so only those can go
 	if q.Depth() != 7 {
 		t.Errorf("an ack can't reach past what Batch returned: depth %d, want 7", q.Depth())
+	}
+}
+
+// An agent's text is queued as itself: HTML-escaped, each < would take six bytes of the queue and the batch.
+func TestNoHTMLEscaping(t *testing.T) {
+	q, err := Open(filepath.Join(t.TempDir(), "q.db"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	q.Push(map[string]string{"target": "<a & b>"})
+	batch, _ := q.Batch(1, 1<<20)
+	if len(batch) != 1 || !bytes.Contains(batch[0], []byte(`"<a & b>"`)) {
+		t.Errorf("queued as %s", batch)
 	}
 }

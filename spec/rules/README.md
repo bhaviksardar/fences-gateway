@@ -54,13 +54,15 @@ A Kubernetes request comes from the validating admission webhook. Its `verb` is 
 
 A tool call an agent reports through a hook (Claude Code's `PreToolUse`, through `fences-hook`) is an `mcp` request with `server` set to the hook's name, `tool` to the tool's name (`Bash`, `Write`…) and `args` to its input. The agent must be assigned that name as an upstream.
 
-A gateway refuses a request whose `args` or `body` repeats a key in any object, or whose query string repeats a parameter. JSON parsers disagree on which copy wins, so the policy could decide on a value the upstream never acts on.
+A gateway refuses a request whose `args` or `body` repeats a key in any object, or whose query string repeats a parameter. JSON parsers disagree on which copy wins, so the policy could decide on a value the upstream never acts on. Keys are compared **ignoring case** (Unicode simple case folding): some parsers, Go's among them, read `"AMOUNT"` as `amount`.
+
+An `http` request's decoded `path` is refused if a segment is `.` or `..`, or if it contains a backslash or a NUL. Once forwarded, the API would resolve them to a path the policy never decided on: `/public/%2e%2e/admin` is `/admin`.
 
 ## Conditions
 
 `{"field": "args.amount", "op": "gt", "value": 100}`
 
-**`field`** is a dotted path into the request: `tool`, `args.order_id`, `body.refund.amount`. A segment is an object key. There are no array indexes. A path that doesn't resolve (a missing key, or a step into something that isn't an object) is **missing**.
+**`field`** is a dotted path into the request: `tool`, `args.order_id`, `body.refund.amount`. A segment is an object key: the key equal to it, or, if there is none, the one key equal to it ignoring case (Unicode simple case folding), so `{"AMOUNT": 5000}` can't slip past `body.amount` to an API that reads keys without case. There are no array indexes. A path that doesn't resolve (a missing key, or a step into something that isn't an object) is **missing**.
 
 | `op` | Holds when |
 |---|---|

@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // What Parse must get right beyond spec/conformance: the conformance cases only reach the schema's enums and ids.
 func TestParse(t *testing.T) {
@@ -21,5 +24,17 @@ func TestParse(t *testing.T) {
 		if _, err := Parse([]byte(src)); (err == nil) != ok {
 			t.Errorf("Parse(%s): err=%v, want ok=%v", src, err, ok)
 		}
+	}
+}
+
+// The schema counts a reason's 500 in characters, as the platform does: 300 non-ASCII characters are fine. A policy
+// one side takes and the other refuses would stop every bundle after it.
+func TestReasonCountsCharacters(t *testing.T) {
+	r := strings.Repeat("é", 300)
+	if _, err := Parse([]byte(`{"rules": [{"id": "r", "on": "mcp", "effect": "deny", "reason": "` + r + `"}]}`)); err != nil {
+		t.Errorf("300 characters: %v", err)
+	}
+	if _, err := Parse([]byte(`{"rules": [{"id": "r", "on": "mcp", "effect": "deny", "reason": "` + strings.Repeat("é", 501) + `"}]}`)); err == nil {
+		t.Error("501 characters: want refused")
 	}
 }

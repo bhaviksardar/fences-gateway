@@ -297,7 +297,8 @@ func (e *Engine) signatures(b *bundle.Bundle) map[*policy.Rule]string {
 		for i := range b.Policy.Rules {
 			if r := &b.Policy.Rules[i]; r.Limit != nil {
 				sig, _ := json.Marshal([]any{r.ID, r.On, r.Where, r.Limit.Sum, r.Limit.Per})
-				e.sigs[r] = string(sig)
+				sum := sha256.Sum256(sig)
+				e.sigs[r] = hex.EncodeToString(sum[:12]) // short: it starts every count's key
 			}
 		}
 		// Counts of rules that are gone go in reserve's sweep, not here: a request still deciding with the previous
@@ -309,7 +310,7 @@ func (e *Engine) signatures(b *bundle.Bundle) map[*policy.Rule]string {
 func (e *Engine) count(b *bundle.Bundle) policy.Counts {
 	sigs := e.signatures(b)
 	return func(r *policy.Rule, req policy.Request) (int, float64) {
-		c := e.counts[sigs[r]+"\x00"+r.LimitKey(req)]
+		c := e.counts[countKey(sigs[r], r, req)]
 		if c == nil {
 			return 0, 0
 		}
@@ -317,6 +318,13 @@ func (e *Engine) count(b *bundle.Bundle) policy.Counts {
 		c.expire(now, r.Limit.WindowS)
 		return len(c.at), c.total
 	}
+}
+
+// countKey is the rule's signature and the hash of the request's limit key: the agent picks its per values, and a
+// key's size mustn't be theirs to choose (one request could otherwise hold megabytes for the whole window).
+func countKey(sig string, r *policy.Rule, req policy.Request) string {
+	sum := sha256.Sum256([]byte(r.LimitKey(req)))
+	return sig + "\x00" + string(sum[:16])
 }
 
 // reserve counts an allowed request against every limit it falls under.
@@ -331,7 +339,7 @@ func (e *Engine) reserve(b *bundle.Bundle, req policy.Request) {
 		if !r.CountsToward(req) {
 			continue
 		}
-		key := sig + "\x00" + r.LimitKey(req)
+		key := countKey(sig, r, req)
 		c := e.counts[key]
 		if c == nil {
 			c = &count{}
@@ -399,6 +407,11 @@ func (e *Engine) approve(ctx context.Context, b *bundle.Bundle, agent string, re
 // (spec/PROTOCOL-GATEWAY.md, Fail mode). ok means go ahead as if approved.
 func (e *Engine) unavailable(b *bundle.Bundle, d policy.Decision, err error) (policy.Decision, bool) {
 	e.log().Warn("fences: approval request failed", "err", err)
+	// The platform answered and refused (429 included): it's there, so on_unavailable doesn't apply. Otherwise an agent
+	// could flood approval requests until it's rate-limited, then go ahead unapproved.
+	if errors.Is(err, sync.ErrThrottled) || errors.Is(err, sync.ErrRejected) || errors.Is(err, sync.ErrForbidden) || errors.Is(err, sync.ErrRevoked) {
+		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval needed, and Fences refused the request for one"}, false
+	}
 	if rule := ruleByID(b, d.Rule); rule == nil || rule.OnUnavailable != policy.Allow {
 		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval needed, and Fences can't be reached"}, false
 	}
@@ -608,7 +621,8 @@ func (e *Engine) event(req policy.Request, d policy.Decision) decisions.Event {
 }
 
 // ParseObject decodes a JSON object for the policy to decide on, refusing a key repeated at any depth: parsers
-// disagree on which copy wins, so the upstream could act on a value the policy never saw.
+// disagree on which copy wins, so the upstream could act on a value the policy never saw. Keys are compared ignoring
+// case, as Go's own decoder matches them: {"amount": 50, "AMOUNT": 5000} is one key twice.
 func ParseObject(data []byte) (map[string]any, error) {
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil || m == nil { // first: it also caps the nesting depth
@@ -633,8 +647,8 @@ func noRepeats(dec *json.Decoder) error {
 			if err != nil {
 				return err
 			}
-			if key := k.(string); seen[key] {
-				return fmt.Errorf("key %q is repeated", key)
+			if key := policy.Fold(k.(string)); seen[key] {
+				return fmt.Errorf("key %q is repeated (keys are compared ignoring case)", k)
 			} else {
 				seen[key] = true
 			}

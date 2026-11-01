@@ -100,6 +100,9 @@ func decide(in []byte, getenv func(string) string) string {
 	if reply.Allowed {
 		return ""
 	}
+	if reply.Message == "" { // anything but an explicit allow blocks, with or without a reason
+		return "Fences didn't allow this call: blocked."
+	}
 	return reply.Message // "Fences: deny: <the rule's reason>"
 }
 

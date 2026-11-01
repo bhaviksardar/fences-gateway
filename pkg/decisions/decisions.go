@@ -45,7 +45,6 @@ const (
 	maxTarget   = 1000 // characters of an event's target: an agent chooses tool names and paths
 	maxEntries  = 50   // arguments listed in an event; a 51st entry says how many more there were
 	maxValue    = 300  // characters of one reported argument value
-	maxArgs     = 300  // characters of arguments before each value is cut to its share, as in the SDK
 	maxApproval = 2000 // characters of an approval summary, however many arguments
 )
 
@@ -102,21 +101,47 @@ func arguments(req policy.Request) map[string]any {
 	return args
 }
 
-// Summary is the request, values included, for the person approving it: `POST /refunds {"amount":240,...}`. Every
-// argument is shown: a long value is cut, never the arguments after it. Control, invisible and quote-like characters
-// are escaped, so they can't hide text or pass for JSON's own quotes. At most 2,000 characters.
+// Summary is the request, values included, for the person approving it: `POST /refunds {"amount":240,...}`. Control,
+// invisible and quote-like characters are escaped, so they can't hide text or pass for JSON's own quotes. At most
+// 2,000 characters. When it's too long, each value keeps its start and its end (`git status …; rm -rf /`), so padding
+// can't push what matters out of view, and if the arguments still don't all fit, it says how many it leaves out.
 func Summary(req policy.Request) string {
 	args := arguments(req)
-	s := escape(marshal(args))
-	if len([]rune(s)) > maxArgs {
-		each := max(maxArgs/max(len(args), 1), 24)
-		short := make(map[string]string, len(args))
-		for k, v := range args {
-			short[cut(k, each)] = cut(text(v), each)
-		}
-		s = escape(marshal(short))
+	head := cut(Target(req), maxTarget) + " "
+	if s := escape(marshal(args)); len([]rune(head+s)) <= maxApproval {
+		return head + s
 	}
-	return cut(Target(req)+" "+s, maxApproval)
+	keys := slices.Sorted(maps.Keys(args))
+	each := max((maxApproval-200)/max(len(keys), 1), 48)
+	note := func(n int) string { return fmt.Sprintf(" (%d more arguments not shown)", n) }
+	budget := maxApproval - len([]rune(head)) - len([]rune(note(len(keys)))) - 2
+	var parts []string
+	used := 0
+	for _, k := range keys {
+		entry := escape(marshal(map[string]string{middle(k, each): middle(text(args[k]), each)}))
+		entry = entry[1 : len(entry)-1] // "k":"v"
+		if n := len([]rune(entry)) + 1; used+n > budget {
+			break
+		} else {
+			used += n
+		}
+		parts = append(parts, entry)
+	}
+	s := head + "{" + strings.Join(parts, ",") + "}"
+	if left := len(keys) - len(parts); left > 0 {
+		s += note(left)
+	}
+	return s
+}
+
+// middle cuts s to n characters by taking them out of its middle: what a long value starts and ends with both show.
+func middle(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	h := (n - 1) / 2
+	return string(r[:h]) + "…" + string(r[len(r)-(n-1-h):])
 }
 
 // RequestHash is the SHA-256 of the request without `at`, as JSON with sorted keys and no whitespace. An approval

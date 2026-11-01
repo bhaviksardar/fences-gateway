@@ -68,7 +68,11 @@ func (q *Queue) Close() error { return q.db.Close() }
 // Push adds an event (a JSON object without "seq") and returns the seq it was given. If the queue is over its max,
 // the oldest events are dropped and counted in Dropped.
 func (q *Queue) Push(event any) (int64, error) {
-	data, err := json.Marshal(event)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // < > & as themselves: escaped, an agent's text would take six times the space
+	err := enc.Encode(event)
+	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	if err != nil || len(data) < 2 || data[0] != '{' {
 		return 0, errors.New("queue: an event must be a JSON object")
 	}

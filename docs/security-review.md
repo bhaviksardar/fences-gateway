@@ -56,3 +56,22 @@ This review checks the threat model in [decisions.md](decisions.md#6-threat-mode
 4. **Signing key in the app's environment** (above).
 
 None of these lets a request through that policy denies.
+
+## Adversarial audit (2026-10-31, after 0.1.0)
+
+An agent acting as an attacker read the code and proved findings with tests against the real handlers. It was stopped before it covered Kubernetes, the shared limit store and the platform side. Everything it proved is fixed in Unreleased (see `CHANGELOG.md`), each with a test that fails on the old code:
+
+| Finding | Severity | Fix |
+|---|---|---|
+| `%2e%2e` and `..%2F` in an HTTP path passed `/public/*` and reached `/admin` | critical | `.` and `..` segments, backslashes and NULs refused |
+| JSON keys in another case (`AMOUNT`): decided on one value, acted on another | high | case-folded repeats refused; field lookup falls back to the case-folded key |
+| The platform's `429` on approval requests let `on_unavailable: allow` through | high | a 4xx from the platform denies |
+| A rule the platform accepts and the gateway refuses froze all later bundles | high | reason length in characters; platform refuses non-float numbers |
+| The hook let a call run on a reply without `allowed: true` | medium | only an explicit allow |
+| Agent-chosen `per` values held memory for the whole window | medium | count keys hashed |
+| MCP sessions were never freed | medium | 10-minute idle timeout, 60 new sessions a minute per agent |
+| Approval summary: padding or many arguments hid what mattered | medium | values show their start and end; left-out arguments counted |
+| HTML escaping grew queued events sixfold | low | events stored unescaped |
+
+Still open: a policy the gateway can't parse still keeps the previous bundle, which is the safe choice for a bad bundle but also holds back revocations. The platform now refuses what the gateway would. Quarantine commands work either way.
+

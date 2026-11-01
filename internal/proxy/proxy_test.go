@@ -151,6 +151,12 @@ func TestRefunds(t *testing.T) {
 		want                      int
 	}{
 		{"GET", "/http/refunds/refunds?id=1&id=2", "", "tok-bot", 400},
+		// A path the API would resolve elsewhere: decided as /refunds/../admin, served as /admin
+		{"GET", "/http/refunds/refunds/%2e%2e/admin", "", "tok-bot", 400},
+		{"GET", "/http/refunds/refunds/..%2Fadmin", "", "tok-bot", 400},
+		{"GET", "/http/refunds/refunds/.%2E/x/%2e%2e/admin", "", "tok-bot", 400},
+		{"GET", "/http/refunds/refunds/..%5cadmin", "", "tok-bot", 400},
+		{"GET", "/http/refunds/refunds/%2e/7", "", "tok-bot", 400},
 		{"POST", "/http/refunds/refunds", `{"amount": 1, "amount": 900}`, "tok-bot", 400},
 		{"GET", "/http/refunds/refunds", "", "tok-nobody", 401},
 		{"GET", "/http/down/x", "", "tok-bot", 401}, // not assigned

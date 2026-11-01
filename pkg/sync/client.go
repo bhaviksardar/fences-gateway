@@ -30,6 +30,8 @@ var (
 	errRepeat    = errors.New("sync: a repeat the platform already has (409)")
 	// ErrRejected is any other 4xx but 429: the platform will never accept this request as it is.
 	ErrRejected = errors.New("sync: the platform rejected the request as it is (4xx)")
+	// ErrThrottled is 429: the platform is there, and asks for fewer requests. Worth retrying later.
+	ErrThrottled = errors.New("sync: the platform is rate-limiting this client (429)")
 )
 
 const maxReply = 32 << 20 // bytes; a bundle is the largest reply
@@ -169,7 +171,9 @@ func (c *Client) post(ctx context.Context, path string, body, out any, signed bo
 		return ErrForbidden
 	case resp.StatusCode == http.StatusConflict:
 		return errRepeat
-	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return ErrThrottled
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return fmt.Errorf("%w: %s answered %d", ErrRejected, path, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return fmt.Errorf("sync: %s answered %d", path, resp.StatusCode)

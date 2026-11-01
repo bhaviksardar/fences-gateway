@@ -90,6 +90,15 @@ func TestHook(t *testing.T) {
 	if got := ask("Bash", map[string]any{"command": "ls"}); !strings.Contains(got, "isn't set up right") {
 		t.Errorf("a malformed URL must block, not crash: %q", got)
 	}
+	// Only an explicit allow lets a call run: a reply without one blocks, message or not
+	for _, reply := range []string{`{"allowed": false}`, `{}`, `null`, `{"allowed": "true"}`, `{"allowed": false, "message": ""}`} {
+		fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(reply)) }))
+		vars["FENCES_GATEWAY_URL"], vars["FENCES_TOKEN"] = fake.URL, "tok-dev"
+		if got := ask("Bash", map[string]any{"command": "ls"}); got == "" {
+			t.Errorf("gateway replied %s: the call went ahead", reply)
+		}
+		fake.Close()
+	}
 	if got := decide([]byte("not json"), func(string) string { return "" }); got == "" {
 		t.Error("bad input must block")
 	}

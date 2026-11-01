@@ -167,7 +167,7 @@ Sent when the policy says `require_approval`.
 ```
 
 - `approval_id`: a UUID the gateway chooses. A repeat is the same request.
-- `summary`: the full request, with values, so the person approving sees what they're approving. Values are clipped, control characters escaped, and the whole summary is at most 2,000 characters, as in PROTOCOL.md.
+- `summary`: the full request, with values, so the person approving sees what they're approving. Values are clipped, control characters escaped, and the whole summary is at most 2,000 characters, as in PROTOCOL.md. A clipped value keeps its start and its end (`git status …; rm -rf /`), so padding can't push what matters out of view. When not every argument fits, the summary says how many it leaves out.
 - `request_hash`: SHA-256 of the request as the rules spec describes it, minus `at`, serialized as JSON with sorted keys and no whitespace. An approval applies only to a request with this hash.
 
 **Response:** `{"ok": true}` once the request is stored and someone has been notified (Slack, PagerDuty, dashboard).
@@ -229,7 +229,8 @@ The gateway keeps deciding from its last good bundle when the platform is unreac
 | Situation | The gateway |
 |---|---|
 | No bundle yet (first start, platform unreachable), or no bundle on disk passes verification | Denies every request |
-| `require_approval` and the approval request can't be sent | Uses the matching rule's `on_unavailable` (default `deny`) |
+| `require_approval` and the platform can't be reached to ask (no answer, or a 5xx) | Uses the matching rule's `on_unavailable` (default `deny`) |
+| `require_approval` and the platform answers the request with a 4xx, `429` included | Denies: the platform is there and refused it, so `on_unavailable` doesn't apply. Otherwise an agent could flood approval requests until it's rate-limited, then go ahead unapproved |
 | Replicas share limits (see Replicas) and the shared store is unreachable | Counts locally and keeps deciding. The event carries `degraded: true` |
 | Quarantine | Unaffected: it's in the bundle, or in a command already applied |
 

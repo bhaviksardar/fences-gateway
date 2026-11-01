@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	gosync "sync"
 	"sync/atomic"
 	"testing"
@@ -195,5 +196,63 @@ func TestCountsSurviveBundleSwitches(t *testing.T) {
 	got := []string{ask(cur, 0), ask(old, 1), ask(cur, 2), ask(old, 3), ask(cur, 4)}
 	if got[0] != "allow" || got[2] != "allow" || got[4] != "rate_limited" {
 		t.Errorf("new-cap allows 2 a minute whatever the old bundle's requests did: %v", got)
+	}
+}
+
+// Go's decoder, and others, match keys ignoring case: the policy must see the copy the upstream acts on.
+func TestParseObjectCaseFold(t *testing.T) {
+	for _, body := range []string{`{"amount": 50, "AMOUNT": 5000}`, `{"amount": 50, "Amount": 5000}`,
+		`{"a": {"key": 1, "Key": 2}}`, `{"list": [{"s": 1, "ſ": 2}]}`} {
+		if _, err := ParseObject([]byte(body)); err == nil {
+			t.Errorf("%s: want refused", body)
+		}
+	}
+	if _, err := ParseObject([]byte(`{"amount": 50, "amounts": 1, "nested": {"amount": 2}}`)); err != nil {
+		t.Errorf("different keys, or the same key at different depths, are fine: %v", err)
+	}
+}
+
+// on_unavailable is for a platform that can't be reached. One that answers 429 (or another 4xx) is there and refused:
+// otherwise an agent floods approval requests until it's rate-limited, then goes ahead unapproved.
+func TestApprovalRefusedIsNotUnavailable(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		status  int // 0: the platform can't be reached
+		allowed bool
+	}{{"429", 429, false}, {"422", 422, false}, {"unreachable", 0, true}, {"503", 503, true}} {
+		platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(c.status) }))
+		url := platform.URL
+		if c.status == 0 {
+			platform.Close()
+		}
+		pub, priv, _ := ed25519.GenerateKey(nil)
+		store := &bundle.Store{Path: filepath.Join(t.TempDir(), "b.json"), Keys: map[string]ed25519.PublicKey{"k1": pub}, GatewayID: "gw_1"}
+		signedBundle(t, store, priv, 1, `{"rules": [{"id": "pay", "on": "http", "effect": "approve", "on_unavailable": "allow"}]}`)
+		q, _ := queue.Open(filepath.Join(t.TempDir(), "q.db"), 0)
+		_, gwKey, _ := ed25519.GenerateKey(nil)
+		e := &Engine{Store: store, Queue: q, Approvals: &approvals.Manager{Client: &sync.Client{BaseURL: url, Kind: "gateway",
+			ID: &sync.Identity{GatewayID: "gw_1", PrivateKey: gwKey}}}}
+		d := e.Decide(context.Background(), policy.Request{"agent": "a", "on": "http", "at": 1793610000.0, "method": "POST", "path": "/pay"})
+		if d.Allowed() != c.allowed {
+			t.Errorf("platform %s: %+v", c.name, d.Decision)
+		}
+		q.Close()
+		platform.Close()
+	}
+}
+
+// The agent picks a limit's per values: they mustn't decide how much memory a count's key holds.
+func TestCountKeysAreSmall(t *testing.T) {
+	e := newEngine(t)
+	huge := strings.Repeat("x", 1<<20)
+	c := e.Decide(context.Background(), policy.Request{"agent": "a", "on": "k8s", "at": 1793610000.0, "verb": "delete", "namespace": huge})
+	c.Done("", nil, 0)
+	if !c.Allowed() || len(e.counts) == 0 {
+		t.Fatalf("decision %v, %d counts", c.Decision, len(e.counts))
+	}
+	for k := range e.counts {
+		if len(k) > 64 {
+			t.Errorf("a count's key is %d bytes", len(k))
+		}
 	}
 }

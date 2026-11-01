@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/bhaviksardar/fences-gateway/internal/engine"
@@ -61,6 +62,10 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req["agent"] = agent
+	if !plainPath(req["path"].(string)) { // the API would resolve it to a path the policy never saw
+		fail(w, http.StatusBadRequest, "path: . and .. segments, backslashes and NULs aren't forwarded")
+		return
+	}
 	if r.Header.Get("Upgrade") != "" { // a WebSocket (or other upgraded) connection would carry requests nobody decides
 		fail(w, http.StatusBadRequest, "protocol upgrades aren't proxied")
 		return
@@ -135,6 +140,20 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 var errRepeat = errors.New("a parameter is repeated")
+
+// plainPath says whether a decoded path means what it says: no . or .. segment (%2e%2e decodes to one), no backslash
+// (a separator to some servers), no NUL.
+func plainPath(p string) bool {
+	if strings.ContainsAny(p, "\\\x00") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 func fail(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

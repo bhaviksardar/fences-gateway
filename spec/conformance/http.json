@@ -65,6 +65,9 @@
      "expect": {"decision": "rate_limited", "rule": "refunds", "reason": "At most $500 of refunds per hour"}},
     {"name": "a negative amount as a string is over the limit too",
      "request": {"agent": "refund-bot", "on": "http", "at": 1793610000, "method": "POST", "path": "/refunds", "body": {"amount": "-5"}},
-     "expect": {"decision": "rate_limited", "rule": "refunds", "reason": "At most $500 of refunds per hour"}}
+     "expect": {"decision": "rate_limited", "rule": "refunds", "reason": "At most $500 of refunds per hour"}},
+    {"name": "a field in another case is the field: AMOUNT is amount, for APIs that read keys without case",
+     "request": {"agent": "refund-bot", "on": "http", "at": 1793610000, "method": "POST", "path": "/refunds", "body": {"AMOUNT": 240}},
+     "expect": {"decision": "require_approval", "rule": "big-refunds", "reason": "Refunds over $100 need approval"}}
   ]
 }
