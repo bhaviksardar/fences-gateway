@@ -9,4 +9,8 @@ data:
     {{- $_ := set $cfg "data_dir" "/var/lib/fences-gateway" }}
     {{- $_ := set $cfg "listen" ":8080" }}
     {{- if not $cfg.name }}{{ $_ := set $cfg "name" .Release.Name }}{{ end }}
+    {{- if .Values.kubernetes.enabled }}
+    {{- $_ := set $cfg "tls" (dict "cert_file" "/etc/fences-gateway-tls/tls.crt" "key_file" "/etc/fences-gateway-tls/tls.key") }}
+    {{- $_ := set $cfg "kubernetes" (dict "audit_token" (ternary "${FENCES_AUDIT_TOKEN}" "" (ne .Values.kubernetes.auditToken.secretName ""))) }}
+    {{- end }}
     {{ toJson $cfg }}

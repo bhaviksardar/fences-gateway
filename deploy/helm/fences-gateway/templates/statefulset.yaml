@@ -20,6 +20,9 @@ spec:
         runAsUser: 65532
         fsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
+      {{- if .Values.kubernetes.enabled }}
+      serviceAccountName: {{ .Release.Name }}
+      {{- end }}
       containers:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -33,14 +36,19 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ .Values.enrollToken.secretName }}, key: {{ .Values.enrollToken.key }}, optional: true}
             {{- end }}
+            {{- if and .Values.kubernetes.enabled .Values.kubernetes.auditToken.secretName }}
+            - name: FENCES_AUDIT_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.kubernetes.auditToken.secretName }}, key: {{ .Values.kubernetes.auditToken.key }}}
+            {{- end }}
           {{- if .Values.envFromSecret }}
           envFrom:
             - secretRef: {name: {{ .Values.envFromSecret }}}
           {{- end }}
           livenessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: http, scheme: {{ ternary "HTTPS" "HTTP" .Values.kubernetes.enabled }}}
           readinessProbe:  # not ready until a verified bundle is loaded
-            httpGet: {path: /readyz, port: http}
+            httpGet: {path: /readyz, port: http, scheme: {{ ternary "HTTPS" "HTTP" .Values.kubernetes.enabled }}}
             periodSeconds: 5
           securityContext:
             allowPrivilegeEscalation: false
@@ -51,11 +59,18 @@ spec:
             - {name: config, mountPath: /etc/fences-gateway, readOnly: true}
             - {name: data, mountPath: /var/lib/fences-gateway}
             - {name: tmp, mountPath: /tmp}  # the root filesystem is read-only; SQLite may want temp files
+            {{- if .Values.kubernetes.enabled }}
+            - {name: tls, mountPath: /etc/fences-gateway-tls, readOnly: true}
+            {{- end }}
       volumes:
         - name: config
           configMap: {name: {{ .Release.Name }}}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.kubernetes.enabled }}
+        - name: tls
+          secret: {secretName: {{ .Release.Name }}-tls}
+        {{- end }}
   volumeClaimTemplates:
     - metadata: {name: data}
       spec:

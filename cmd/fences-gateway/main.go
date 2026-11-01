@@ -29,6 +29,7 @@ import (
 	"github.com/bhaviksardar/fences-gateway/internal/approvals"
 	"github.com/bhaviksardar/fences-gateway/internal/engine"
 	"github.com/bhaviksardar/fences-gateway/internal/hook"
+	"github.com/bhaviksardar/fences-gateway/internal/k8s"
 	"github.com/bhaviksardar/fences-gateway/internal/mcp"
 	"github.com/bhaviksardar/fences-gateway/internal/proxy"
 	"github.com/bhaviksardar/fences-gateway/pkg/bundle"
@@ -50,6 +51,16 @@ type Config struct {
 	ReportArgumentValues bool                    `json:"report_argument_values"`
 	PinnedSigningKeys    map[string]string       `json:"pinned_signing_keys"` // key_id → base64; overrides enrollment's
 	MaxQueuedEvents      int                     `json:"max_queued_events"`
+	TLS                  *struct {
+		CertFile string `json:"cert_file"`
+		KeyFile  string `json:"key_file"`
+	} `json:"tls"` // serve https: the Kubernetes API server calls webhooks over TLS only
+	Kubernetes *struct {
+		APIServer  string `json:"api_server"`  // default: the cluster the gateway runs in
+		TokenFile  string `json:"token_file"`  // default: the pod's service account token
+		CAFile     string `json:"ca_file"`     // default: the pod's service account CA
+		AuditToken string `json:"audit_token"` // the audit webhook's Bearer token; empty: no /k8s/audit
+	} `json:"kubernetes"` // serve /k8s/admit and contain quarantined agents' service accounts
 }
 
 func main() {
@@ -102,6 +113,12 @@ func loadConfig(path string) (*Config, error) {
 		for k, v := range a.Headers {
 			a.Headers[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
 		}
+	}
+	if c.TLS != nil && (c.TLS.CertFile == "" || c.TLS.KeyFile == "") {
+		return nil, fmt.Errorf("%s: tls needs cert_file and key_file", path)
+	}
+	if c.Kubernetes != nil {
+		c.Kubernetes.AuditToken = envRef.ReplaceAllStringFunc(c.Kubernetes.AuditToken, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
 	}
 	return &c, nil
 }
@@ -181,6 +198,34 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 
 	bg, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if kc := cfg.Kubernetes; kc != nil {
+		cluster, err := k8s.InCluster(kc.APIServer, kc.TokenFile, kc.CAFile)
+		if err != nil {
+			return err
+		}
+		contain := &k8s.Containment{Engine: eng, Cluster: cluster}
+		mux.Handle("POST /k8s/admit", http.MaxBytesHandler(k8s.Admission(eng), 8<<20)) // an object and its old version
+		if kc.AuditToken != "" {
+			mux.Handle("POST /k8s/audit", http.MaxBytesHandler(k8s.Audit(eng, kc.AuditToken), 32<<20))
+		}
+		// A quarantine command gets a second ack with the containment result (spec/PROTOCOL-GATEWAY.md, Commands)
+		syncer.Apply = func(cmd sync.Command) {
+			eng.Apply(cmd)
+			var q struct{ Agent string }
+			if cmd.Type != "quarantine" || json.Unmarshal(cmd.Raw, &q) != nil || !contain.Governs(q.Agent) {
+				return
+			}
+			go func() {
+				extra := map[string]any{"containment": "ok"}
+				if err := contain.Reconcile(bg, q.Agent); err != nil {
+					extra = map[string]any{"containment": "failed", "detail": clip(err.Error(), 300)}
+				}
+				extra["finished_at"] = float64(time.Now().UnixMilli()) / 1000
+				syncer.Ack(sync.Ack{ID: cmd.ID, Type: cmd.Type, Extra: extra})
+			}()
+		}
+		go contain.Run(bg, 2*time.Second) // quarantines from a bundle, and releases
+	}
 	go syncer.Run(bg)
 	go sync.Ship(bg, client, q, nil)
 
@@ -193,7 +238,13 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 	}
 	slog.Info("fences-gateway: serving", "listen", ln.Addr().String(), "upstreams", len(cfg.Upstreams), "apis", len(cfg.APIs), "version", version)
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if cfg.TLS != nil {
+			errc <- srv.ServeTLS(ln, cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		} else {
+			errc <- srv.Serve(ln)
+		}
+	}()
 	select {
 	case err := <-errc:
 		return err
@@ -202,4 +253,11 @@ func run(ctx context.Context, path string, ready chan<- string) error {
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
 	return srv.Shutdown(shutdown)
+}
+
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }

@@ -142,7 +142,9 @@ One event for every request the gateway decides. Events go into a local SQLite q
 | `decision`, `rule`, `reason` | From the rules spec, plus `unauthenticated` (unknown credential). |
 | `degraded` | `true` if the fail mode decided this, not the policy (see Fail mode). |
 | `latency_ms` | Time the gateway added: policy, queue and bookkeeping. It doesn't include the upstream. |
-| `upstream_status` | `ok` or `error` for MCP, the status code for HTTP, `null` for k8s or when the call wasn't forwarded. |
+| `upstream_status` | `ok` or `error` for MCP, the status code for HTTP, `null` for a k8s admission or when the call wasn't forwarded. |
+
+**Kubernetes reads** never reach the admission webhook, so the gateway records them from the cluster's audit log: an event with `decision: "allow"`, `rule: null`, `reason: "Seen in the cluster's audit log"`, and the API server's response code in `upstream_status`. The audit log names the resource, not the kind, so the target reads `list pods shop/`. Fences didn't decide these, and they don't count against limits.
 
 **Size.** An event's `target` is at most 1,000 characters and its `arguments` at most 50 entries; the gateway clips them (a cut `target` ends in `…`, and a 51st entry says how many more there were). A batch is at most 512 KB of JSON, so it stays inside the platform's request limit.
 
@@ -190,7 +192,7 @@ Commands arrive in sync responses and are applied in the order listed. Unknown t
 
 | Command | Effect in the gateway |
 |---|---|
-| `{"type": "quarantine", "id", "agent", "bundle_version", "by"?, "reason"?}` | Every request from `agent` is denied at once, and its open MCP sessions and held calls are closed. On Kubernetes, the gateway runs its containment action: it removes the agent's write role binding and keeps read access. This holds until the gateway applies a bundle whose `version` is at least `bundle_version`. From then on, the bundle's `quarantined` list decides. |
+| `{"type": "quarantine", "id", "agent", "bundle_version", "by"?, "reason"?}` | Every request from `agent` is denied at once, and its open MCP sessions and held calls are closed. On Kubernetes, the gateway runs its containment action: it removes the agent's service account from its write role bindings and keeps read access. Write bindings are the RoleBindings and ClusterRoleBindings labeled `fences.dev/containment=write`. The service account moves from the binding's `subjects` into its `fences.dev/removed-subjects` annotation, and back when a bundle releases the agent. This holds until the gateway applies a bundle whose `version` is at least `bundle_version`. From then on, the bundle's `quarantined` list decides. |
 | `{"type": "approval", "id", "approval_id", "granted", "by", "note"?}` | Answers a pending approval (see Approvals). |
 
 **There's no release command.** A quarantine is released by a new bundle that no longer lists the agent. Bundles are signed and commands aren't, so the only thing a command can do is make the gateway stricter, apart from answering an approval the gateway itself asked for. Someone who can send commands but can't sign bundles can't open anything up.

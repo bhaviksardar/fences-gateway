@@ -39,3 +39,15 @@ service:
 resources:
   requests: {cpu: 100m, memory: 64Mi}
   limits: {memory: 256Mi}
+
+# Kubernetes: an admission webhook for AI agents' service accounts, and containment on quarantine. The gateway then
+# serves https (the API server calls webhooks over TLS only). See docs/kubernetes.md.
+kubernetes:
+  enabled: false
+  agents: []  # their service accounts, e.g. system:serviceaccount:ops:sre-bot (set the same on the agent in Fences)
+  writeRoles: []  # the Roles and ClusterRoles the agents' write bindings refer to: the gateway may bind only these
+  failurePolicy: Fail  # the gateway unreachable: the agents' writes are refused
+  auditToken:  # the audit webhook's Bearer token, from a Secret; unset: no /k8s/audit
+    secretName: ""
+    key: token
+

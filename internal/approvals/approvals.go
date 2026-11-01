@@ -46,6 +46,24 @@ type Manager struct {
 // Ask sends an approval request and waits for the answer, the timeout, or ctx. id is the approval_id it chose. An
 // error other than ErrTimeout or ctx's means the request couldn't be sent.
 func (m *Manager) Ask(ctx context.Context, r Request, timeout time.Duration) (id string, a Answer, err error) {
+	id, answer, stop, err := m.Send(ctx, r, timeout)
+	if err != nil {
+		return id, Answer{}, err
+	}
+	defer stop()
+	select {
+	case a := <-answer:
+		return id, a, nil
+	case <-time.After(timeout):
+		return id, Answer{}, ErrTimeout
+	case <-ctx.Done():
+		return id, Answer{}, ctx.Err()
+	}
+}
+
+// Send sends an approval request and returns at once: the answer arrives on answer, until stop is called. For
+// surfaces that can't hold a request open (Kubernetes admission). The request is pending, for Pending, until stop.
+func (m *Manager) Send(ctx context.Context, r Request, timeout time.Duration) (id string, answer <-chan Answer, stop func(), err error) {
 	id = uuid()
 	ch := make(chan Answer, 1)
 	m.mu.Lock()
@@ -54,28 +72,21 @@ func (m *Manager) Ask(ctx context.Context, r Request, timeout time.Duration) (id
 	}
 	m.pending[id] = ch
 	m.mu.Unlock()
-	defer func() {
+	stop = func() {
 		m.mu.Lock()
 		delete(m.pending, id)
 		m.mu.Unlock()
-	}()
-
+	}
 	body := struct {
 		ApprovalID string `json:"approval_id"`
 		Request
 		TimeoutS float64 `json:"timeout_s"`
 	}{id, r, timeout.Seconds()}
 	if err := m.Client.Post(ctx, "/api/gateways/approvals", body, nil); err != nil {
-		return id, Answer{}, fmt.Errorf("approvals: couldn't ask: %w", err)
+		stop()
+		return id, nil, nil, fmt.Errorf("approvals: couldn't ask: %w", err)
 	}
-	select {
-	case a := <-ch:
-		return id, a, nil
-	case <-time.After(timeout):
-		return id, Answer{}, ErrTimeout
-	case <-ctx.Done():
-		return id, Answer{}, ctx.Err()
-	}
+	return id, ch, stop, nil
 }
 
 // Answer delivers an approval command. An answer to an approval this gateway isn't waiting on is ignored.

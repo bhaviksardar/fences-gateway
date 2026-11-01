@@ -41,6 +41,7 @@ type Engine struct {
 	history     []policy.Request           // allowed requests, oldest first, for limits
 	quarantined map[string]int64           // agent → the bundle version that takes over from the quarantine command
 	held        map[string]map[*int]func() // agent → cancels for calls waiting on an approval
+	later       map[string]*later          // agent + request_hash → an approval asked for a request that couldn't wait
 	unauthSec   int64
 	unauthN     int
 
@@ -110,6 +111,24 @@ func (e *Engine) Agent(authorization, upstream string) (string, bool) {
 	return "", false
 }
 
+// ServiceAccount is the agent whose k8s_service_account credential is username, the name the Kubernetes API server
+// authenticated (system:serviceaccount:<namespace>:<name>). A Kubernetes agent needs no upstream assignment: its
+// credential in this gateway's bundle is the assignment.
+func (e *Engine) ServiceAccount(username string) (string, bool) {
+	b := e.Store.Current()
+	if b == nil || username == "" {
+		return "", false
+	}
+	for name, a := range b.Agents {
+		for _, c := range a.Credentials {
+			if c.Type == "k8s_service_account" && c.Name == username {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // Unauthenticated records a request whose credential matched no agent, at most 10 a second: anyone can send these,
 // and they mustn't push real decisions out of a full queue.
 func (e *Engine) Unauthenticated(req policy.Request) {
@@ -140,7 +159,9 @@ func (e *Engine) Decide(ctx context.Context, req policy.Request) *Call {
 
 	var approvalID string
 	waited := time.Duration(0)
-	if d.Decision == policy.RequireApproval {
+	if on, _ := req["on"].(string); d.Decision == policy.RequireApproval && on == "k8s" {
+		d, degraded, approvalID = e.approveLater(ctx, b, agent, req, d)
+	} else if d.Decision == policy.RequireApproval {
 		t := time.Now()
 		d, degraded, approvalID = e.approve(ctx, b, agent, req, d)
 		waited = time.Since(t)
@@ -221,10 +242,8 @@ func (e *Engine) approve(ctx context.Context, b *bundle.Bundle, agent string, re
 	case errors.Is(err, context.Canceled) && ctx.Err() != nil:
 		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval wait ended"}, false, id
 	case err != nil:
-		// The platform can't be asked: the rule's on_unavailable decides (spec/PROTOCOL-GATEWAY.md, Fail mode)
-		e.log().Warn("fences: approval request failed", "err", err)
-		if rule := ruleByID(b, d.Rule); rule == nil || rule.OnUnavailable != policy.Allow {
-			return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval needed, and Fences can't be reached"}, true, id
+		if denied, ok := e.unavailable(b, d, err); !ok {
+			return denied, true, id
 		}
 		degraded = true
 	case !answer.Granted:
@@ -238,6 +257,107 @@ func (e *Engine) approve(ctx context.Context, b *bundle.Bundle, agent string, re
 	defer e.mu.Unlock()
 	d, deg := e.decideLocked(e.Store.Current(), agent, req, true)
 	return d, degraded || deg, id
+}
+
+// unavailable is the fail mode when the platform can't be asked for an approval: the rule's on_unavailable decides
+// (spec/PROTOCOL-GATEWAY.md, Fail mode). ok means go ahead as if approved.
+func (e *Engine) unavailable(b *bundle.Bundle, d policy.Decision, err error) (policy.Decision, bool) {
+	e.log().Warn("fences: approval request failed", "err", err)
+	if rule := ruleByID(b, d.Rule); rule == nil || rule.OnUnavailable != policy.Allow {
+		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: "approval needed, and Fences can't be reached"}, false
+	}
+	return d, true
+}
+
+// GrantTTL is how long a granted approval waits for its request to come back (spec/PROTOCOL-GATEWAY.md, Approvals).
+const GrantTTL = 10 * time.Minute
+
+type later struct {
+	id       string
+	answered bool
+	granted  bool
+	reason   string
+	at       time.Time
+}
+
+// approveLater is approval for a surface that can't hold a request open: the first request asks and is refused at
+// once, naming the approval; the same request (same request_hash, same agent) within GrantTTL of the grant goes ahead.
+// Each grant is used once.
+func (e *Engine) approveLater(ctx context.Context, b *bundle.Bundle, agent string, req policy.Request, d policy.Decision) (policy.Decision, bool, string) {
+	key := agent + "\x00" + decisions.RequestHash(req)
+	waiting := func(id string) policy.Decision {
+		msg := "Waiting for approval"
+		if id != "" {
+			msg += " " + id
+		}
+		if r := strings.TrimSuffix(d.Reason, "."); r != "" {
+			msg += ": " + r
+		}
+		return policy.Decision{Decision: policy.RequireApproval, Rule: d.Rule, Reason: msg + ". Retry once it's approved."}
+	}
+	e.mu.Lock()
+	if e.later == nil {
+		e.later = map[string]*later{}
+	}
+	switch a := e.later[key]; {
+	case a != nil && a.granted && time.Since(a.at) <= GrantTTL:
+		delete(e.later, key)
+		d, degraded := e.decideLocked(e.Store.Current(), agent, req, true)
+		e.mu.Unlock()
+		return d, degraded, a.id
+	case a != nil && !a.answered:
+		e.mu.Unlock()
+		return waiting(a.id), false, a.id
+	case a != nil && !a.granted: // refused or timed out: said once, and the next retry asks again
+		delete(e.later, key)
+		e.mu.Unlock()
+		return policy.Decision{Decision: policy.Deny, Rule: d.Rule, Reason: a.reason}, false, a.id
+	}
+	a := &later{} // in place before asking, so the same request at the same time doesn't ask twice
+	e.later[key] = a
+	e.mu.Unlock()
+
+	timeout := time.Duration(b.ApprovalTimeoutS * float64(time.Second))
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	on, _ := req["on"].(string)
+	id, answer, stop, err := e.Approvals.Send(ctx, approvals.Request{
+		Agent: agent, On: on, Target: decisions.Target(req), Rule: d.Rule, Reason: d.Reason,
+		Summary: decisions.Summary(req), RequestHash: decisions.RequestHash(req),
+	}, timeout)
+	if err != nil {
+		e.mu.Lock()
+		delete(e.later, key)
+		e.mu.Unlock()
+		if denied, ok := e.unavailable(b, d, err); !ok {
+			return denied, true, id
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		d, _ := e.decideLocked(e.Store.Current(), agent, req, true)
+		return d, true, id
+	}
+	e.mu.Lock()
+	a.id = id
+	e.mu.Unlock()
+	go func() {
+		defer stop()
+		reason := "approval timed out"
+		var ans approvals.Answer
+		select {
+		case ans = <-answer:
+			reason = "not approved"
+			if ans.Note != "" {
+				reason += ": " + ans.Note
+			}
+		case <-time.After(timeout):
+		}
+		e.mu.Lock()
+		a.answered, a.granted, a.reason, a.at = true, ans.Granted, reason, time.Now()
+		e.mu.Unlock()
+	}()
+	return waiting(id), false, id
 }
 
 func ruleByID(b *bundle.Bundle, id string) *policy.Rule {

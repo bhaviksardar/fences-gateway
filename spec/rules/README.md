@@ -50,6 +50,8 @@ What the engine decides on. Every request has `agent` (the name the gateway reso
 | `http` | `server` (the API's name in the gateway's config), `method` (uppercase), `path` (without the query string, decoded), `query` (object: each parameter's value as a string), `body` (the parsed JSON body, if any) |
 | `k8s` | `verb` (`create`, `update`, `patch`, `delete`, `get`, `list`, `watch`…), `group`, `kind` (e.g. `Pod`), `namespace` (`""` for cluster-scoped), `name`, `subresource` |
 
+A Kubernetes request comes from the validating admission webhook. Its `verb` is the operation in lowercase: `create`, `update`, `delete` or `connect`. The API server sends a patch to admission as an update, so a rule meant for both should say `update`. Its `kind` and `group` are the object's. The agent is the one whose `k8s_service_account` credential is the username the API server authenticated. Reads (`get`, `list`, `watch`) never reach admission, so rules on them never match there.
+
 A tool call an agent reports through a hook (Claude Code's `PreToolUse`, through `fences-hook`) is an `mcp` request with `server` set to the hook's name, `tool` to the tool's name (`Bash`, `Write`…) and `args` to its input. The agent must be assigned that name as an upstream.
 
 A gateway refuses a request whose `args` or `body` repeats a key in any object, or whose query string repeats a parameter. JSON parsers disagree on which copy wins, so the policy could decide on a value the upstream never acts on.

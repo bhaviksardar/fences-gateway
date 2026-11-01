@@ -1,0 +1,78 @@
+{{- if .Values.kubernetes.enabled }}
+{{- /* The webhook's TLS: generated once, then kept (lookup) so upgrades don't change the caBundle under the API server */}}
+{{- $host := printf "%s.%s.svc" .Release.Name .Release.Namespace }}
+{{- $old := lookup "v1" "Secret" .Release.Namespace (printf "%s-tls" .Release.Name) }}
+{{- $ca := "" }}{{- $crt := "" }}{{- $key := "" }}
+{{- if $old }}
+{{- $ca = index $old.data "ca.crt" }}{{- $crt = index $old.data "tls.crt" }}{{- $key = index $old.data "tls.key" }}
+{{- else }}
+{{- $caObj := genCA "fences-gateway-webhook-ca" 3650 }}
+{{- $cert := genSignedCert $host nil (list $host) 3650 $caObj }}
+{{- $ca = $caObj.Cert | b64enc }}{{- $crt = $cert.Cert | b64enc }}{{- $key = $cert.Key | b64enc }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-tls
+  labels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $ca }}
+  tls.crt: {{ $crt }}
+  tls.key: {{ $key }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+  labels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
+---
+# Containment: the gateway moves a quarantined agent out of the write bindings (labeled fences.dev/containment=write)
+# and back on release. Putting it back is a bind, so it may bind only the write roles named here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-containment
+rules:
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, clusterrolebindings]
+    verbs: [get, list, update]
+  {{- with .Values.kubernetes.writeRoles }}
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, clusterroles]
+    verbs: [bind]
+    resourceNames: {{ toJson . }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-containment
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ .Release.Name }}-containment}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ .Release.Name }}-{{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: fences-gateway, app.kubernetes.io/instance: {{ .Release.Name }}}
+webhooks:
+  - name: agents.fences.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: {{ .Values.kubernetes.failurePolicy }}
+    timeoutSeconds: 10
+    clientConfig:
+      service: {name: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}, path: /k8s/admit, port: {{ .Values.service.port }}}
+      caBundle: {{ $ca }}
+    rules:
+      - {operations: [CREATE, UPDATE, DELETE], apiGroups: ["*"], apiVersions: ["*"], resources: ["*/*"], scope: "*"}
+    matchConditions:
+      # Only the agents' service accounts: nobody else's requests wait on the gateway
+      - name: agents
+        expression: {{ printf "request.userInfo.username in %s" (toJson .Values.kubernetes.agents) | quote }}
+      # An agent asking what it may do (kubectl auth can-i) isn't an action
+      - name: not-reviews
+        expression: "!(request.resource.group in ['authorization.k8s.io', 'authentication.k8s.io'])"
+{{- end }}
