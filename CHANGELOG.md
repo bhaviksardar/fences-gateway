@@ -4,6 +4,12 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.1.0 (2026-10-31)
+
+The first release: `pkg/` is the API `fences-edge` builds on, and `spec/` at this tag is what `fences-platform` checks against.
+
 - `spec/PROTOCOL-GATEWAY.md`, `pkg/sync` **(edge)**: on `401`, a client keeps the last good bundle and tries again once a minute, instead of stopping until restarted, so a corrected clock recovers. The default `sync_interval_s` is 2 seconds, not 15.
 - `spec/rules/README.md` **(edge)**: how an admission request maps to a `k8s` request. Its `verb` is the operation, and the API server sends a patch as `update`. The agent is the one whose `k8s_service_account` is the authenticated username.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: Kubernetes reads come from the audit log as `allow` events with the reason "Seen in the cluster's audit log". Containment acts on bindings labeled `fences.dev/containment=write`, and moves the service account into the `fences.dev/removed-subjects` annotation and back.

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: fences-gateway
-description: Fences Gateway governs agents where they reach tools (MCP servers today).
+description: Fences Gateway governs AI agents where they reach your systems (MCP servers, HTTP APIs, Claude Code, Kubernetes).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
