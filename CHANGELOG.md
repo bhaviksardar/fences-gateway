@@ -4,16 +4,17 @@ Changes to `spec/` and `pkg/` are listed here, because other repos pin them: `fe
 
 ## Unreleased
 
-- `pkg/policy` **(edge)**: `DecideCounts` decides with limit counts the caller keeps. `Counts`, `HistoryCounts`, `Rule.CountsToward`, `Rule.LimitKey` and `Rule.Amount` are added. `Decide` is unchanged. `spec/rules/README.md` allows an engine that keeps counts to count a changed rule from the change.
-- `cmd/fences-gateway`: on shutdown, calls held for an approval are denied at once ("approval wait ended"), and requests still open after 2 seconds are cancelled. A restart with a held call took 10 seconds and returned an error, and now takes about 2. `chaos_test.go` covers it, along with the platform being unreachable (the cached bundle keeps working, approvals fail closed, and a restart serves from disk), the upstream going down and coming back, and events kept across a restart (`docs/chaos.md`).
-- Releases: one tag builds the image with an SBOM and provenance, signs it with Sigstore (keyless), and publishes the Helm chart to `oci://ghcr.io/bhaviksardar/charts`. The `pkg/` module is versioned by the same tag, which must match the chart and this file. `docs/security-review.md` reviews the threat model.
-- `spec/PROTOCOL-GATEWAY.md` **(edge)**: the `header` credential type is reserved, since the platform doesn't issue one yet.
-- `internal/engine` keeps running counts per limit instead of every allowed request. A decision with an hour-long limit at 1,000 requests a second went from a full scan of the history under the lock, which collapsed in about 30 seconds, to 0.024 ms p99. It holds 16 bytes per counted request. `docs/load-test.md` has the numbers.
+Nothing yet.
 
 ## 0.1.0 (2026-10-31)
 
 The first release: `pkg/` is the API `fences-edge` builds on, and `spec/` at this tag is what `fences-platform` checks against.
 
+- `pkg/policy` **(edge)**: `DecideCounts` decides with limit counts the caller keeps. `Counts`, `HistoryCounts`, `Rule.CountsToward`, `Rule.LimitKey` and `Rule.Amount` are added. `Decide` is unchanged. `spec/rules/README.md` allows an engine that keeps counts to count a changed rule from the change.
+- `cmd/fences-gateway`: on shutdown, calls held for an approval are denied at once ("approval wait ended"), and requests still open after 2 seconds are cancelled. A restart with a held call took 10 seconds and returned an error, and now takes about 2. `chaos_test.go` covers it, along with the platform being unreachable (the cached bundle keeps working, approvals fail closed, and a restart serves from disk), the upstream going down and coming back, and events kept across a restart (`docs/chaos.md`).
+- Releases: one tag builds the image with an SBOM and provenance, signs it with Sigstore (keyless), and publishes the Helm chart to `oci://ghcr.io/bhaviksardar/charts`. The `pkg/` module is versioned by the same tag, which must match the chart and this file. `docs/security-review.md` reviews the threat model.
+- `spec/PROTOCOL-GATEWAY.md` **(edge)**: the `header` credential type is reserved, since the platform doesn't issue one yet.
+- `internal/engine` keeps running counts per limit instead of every allowed request. A decision with an hour-long limit at 1,000 requests a second went from a full scan of the history under the lock, which collapsed in about 30 seconds, to 0.024 ms p99. It holds 16 bytes per counted request. `docs/load-test.md` has the numbers.
 - `spec/PROTOCOL-GATEWAY.md`, `pkg/sync` **(edge)**: on `401`, a client keeps the last good bundle and tries again once a minute, instead of stopping until restarted, so a corrected clock recovers. The default `sync_interval_s` is 2 seconds, not 15.
 - `spec/rules/README.md` **(edge)**: how an admission request maps to a `k8s` request. Its `verb` is the operation, and the API server sends a patch as `update`. The agent is the one whose `k8s_service_account` is the authenticated username.
 - `spec/PROTOCOL-GATEWAY.md` **(edge)**: Kubernetes reads come from the audit log as `allow` events with the reason "Seen in the cluster's audit log". Containment acts on bindings labeled `fences.dev/containment=write`, and moves the service account into the `fences.dev/removed-subjects` annotation and back.
